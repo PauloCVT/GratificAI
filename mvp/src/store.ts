@@ -1,83 +1,105 @@
 import { useSyncExternalStore } from 'react';
+import { Campos, Pesos, Profile, Regras, pesosValidos, regrasValidas } from './domain';
 import {
-  Campos, Portaria, Profile, Pesos, Regras, indicadoresDaUnidade, pesosValidos, podeEditarUnidade,
-  podeParametrizar, portariasIniciais, progressoDe, regrasValidas, UNIDADES,
-} from './domain';
+  ApiError, StateApi, alterarStatusUsuarioApi, analisarLancamentoApi, ativarPortariaApi, criarPortariaApi,
+  criarUnidadeApi, criarUsuarioApi, obterEstadoApi, publicarPortariaApi, salvarRascunhoApi,
+  submeterLancamentoApi, trocarSenhaApi,
+} from './api';
+import { ResultadoAnalise } from './ml';
+import { DISTRITOS } from './domain';
 
-export interface State {
-  portarias: Portaria[];
-  vigenteId: string;
-  lancamentos: Record<number, Campos>;
-  enviadas: Record<number, boolean>;
+export interface State extends StateApi {
+  carregando: boolean;
+  erro: string | null;
 }
 
-const KEY = 'gratificai-mvp-figma-v1';
-const inicial = (): State => ({ portarias: portariasIniciais(), vigenteId: 'cam-1.2', lancamentos: {}, enviadas: {} });
-
-const hasStorage = () => typeof localStorage !== 'undefined';
-
-function carregar(): State {
-  try {
-    const raw = hasStorage() ? localStorage.getItem(KEY) : null;
-    if (raw) {
-      const s = { ...inicial(), ...JSON.parse(raw) } as State;
-      if (s.portarias.some(p => p.id === s.vigenteId)) return s;
-    }
-  } catch { /* estado corrompido: recomeça */ }
-  return inicial();
-}
-
-let state: State = carregar();
+const inicial = (): State => ({
+  user: { id: '', nome: '', email: '', perfil: 'cam', distrito: null, unidadeId: null, ativo: false, deveTrocarSenha: false },
+  unidades: [], distritos: DISTRITOS, users: [], portarias: [], vigenteId: '',
+  lancamentos: {}, enviadas: {}, justificativas: {}, carregando: true, erro: null,
+});
+let state: State = inicial();
+let requisicaoDeEstado = 0;
 const listeners = new Set<() => void>();
 
 function commit(next: State) {
   state = next;
-  try { if (hasStorage()) localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* sem persistência */ }
-  listeners.forEach(l => l());
+  listeners.forEach(listener => listener());
+}
+
+function incorporarApi(dados: StateApi) {
+  commit({ ...dados, carregando: false, erro: null });
 }
 
 export const getState = () => state;
+
 export function useStore(): State {
-  return useSyncExternalStore(l => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
+  return useSyncExternalStore(
+    listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    () => state,
+  );
 }
+
 export const portariaVigente = (s: State = state) => s.portarias.find(p => p.id === s.vigenteId) ?? s.portarias[0];
 
-// Toda escrita revalida a permissão: esconder botões na tela não é a barreira de segurança.
-export function salvarLancamento(perfil: Profile, unidadeId: number, campos: Campos): boolean {
-  if (!podeEditarUnidade(perfil, unidadeId)) return false;
-  commit({ ...state, lancamentos: { ...state.lancamentos, [unidadeId]: campos }, enviadas: { ...state.enviadas, [unidadeId]: false } });
-  return true;
+export async function carregarEstado(): Promise<void> {
+  const id = ++requisicaoDeEstado;
+  commit({ ...state, carregando: true, erro: null });
+  try {
+    const dados = await obterEstadoApi();
+    if (id === requisicaoDeEstado) incorporarApi(dados);
+  } catch (error) {
+    if (id === requisicaoDeEstado) {
+      const mensagem = error instanceof ApiError ? error.message : 'Falha ao carregar os dados do backend.';
+      commit({ ...state, carregando: false, erro: mensagem });
+    }
+    throw error;
+  }
 }
 
-export function submeter(perfil: Profile, unidadeId: number, campos: Campos): boolean {
-  const un = UNIDADES.find(u => u.id === unidadeId);
-  if (!un || !podeEditarUnidade(perfil, unidadeId)) return false;
-  if (progressoDe(indicadoresDaUnidade(un, portariaVigente().pesos), campos).pct < 100) return false;
-  commit({ ...state, lancamentos: { ...state.lancamentos, [unidadeId]: campos }, enviadas: { ...state.enviadas, [unidadeId]: true } });
-  return true;
+export async function analisarLancamento(unidadeId: number, campos: Campos): Promise<ResultadoAnalise> {
+  return analisarLancamentoApi(unidadeId, campos);
 }
 
-export function definirVigente(perfil: Profile, id: string): boolean {
-  if (!podeParametrizar(perfil) || !state.portarias.some(p => p.id === id)) return false;
-  commit({ ...state, vigenteId: id });
-  return true;
+export async function salvarLancamento(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}): Promise<void> {
+  incorporarApi(await salvarRascunhoApi(unidadeId, campos, justificativas));
 }
 
-export function publicarPortaria(perfil: Profile, id: string, pesos: Pesos, regras: Regras): boolean {
-  if (!podeParametrizar(perfil) || !pesosValidos(pesos) || !regrasValidas(regras)) return false;
-  if (!state.portarias.some(p => p.id === id)) return false;
-  commit({ ...state, portarias: state.portarias.map(p => (p.id === id ? { ...p, pesos, regras } : p)) });
-  return true;
+export async function submeter(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}): Promise<void> {
+  incorporarApi(await submeterLancamentoApi(unidadeId, campos, justificativas));
 }
 
-export function criarPortaria(perfil: Profile, nome: string): string | null {
-  const nomeLimpo = nome.trim();
-  if (!podeParametrizar(perfil) || !nomeLimpo) return null;
-  const base = portariaVigente();
-  const id = `portaria-${Date.now()}`;
-  const nova: Portaria = { id, nome: nomeLimpo, pesos: structuredClone(base.pesos), regras: { ...base.regras } };
-  commit({ ...state, portarias: [...state.portarias, nova], vigenteId: id });
-  return id;
+export async function definirVigente(id: string): Promise<void> {
+  incorporarApi(await ativarPortariaApi(id));
 }
 
-export const resetar = () => commit(inicial());
+export async function publicarPortaria(id: string, pesos: Pesos, regras: Regras): Promise<void> {
+  if (!pesosValidos(pesos) || !regrasValidas(regras)) throw new ApiError('Pesos e regras inválidos.', 400);
+  incorporarApi(await publicarPortariaApi(id, pesos, regras));
+}
+
+export async function criarPortaria(nome: string): Promise<void> {
+  if (!nome.trim()) throw new ApiError('Informe o nome da portaria.', 400);
+  incorporarApi(await criarPortariaApi(nome));
+}
+
+export async function criarUnidade(nome: string, tipo: string, distrito: string): Promise<void> {
+  incorporarApi(await criarUnidadeApi(nome, tipo, distrito));
+}
+
+export async function criarUsuario(dados: { nome: string; email: string; senha: string; perfil: Profile; distrito?: string; unidadeId?: number }): Promise<void> {
+  incorporarApi(await criarUsuarioApi(dados));
+}
+
+export async function alterarStatusUsuario(id: string, ativo: boolean): Promise<void> {
+  incorporarApi(await alterarStatusUsuarioApi(id, ativo));
+}
+
+export async function trocarSenha(senhaAtual: string, novaSenha: string): Promise<void> {
+  await trocarSenhaApi(senhaAtual, novaSenha);
+}
+
+export function limparEstadoLocal() {
+  requisicaoDeEstado++;
+  commit({ ...inicial(), carregando: false });
+}

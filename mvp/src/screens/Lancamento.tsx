@@ -1,20 +1,27 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Campos, PROFILES, Pesos, Profile, Unidade, chaveMatriz, indicadoresDaUnidade, pctDe, progressoDe, tipoParaPerfil, unidadesVisiveis,
 } from '../domain';
-import { portariaVigente, salvarLancamento, submeter, useStore } from '../store';
+import { analisarLancamento, portariaVigente, salvarLancamento, submeter, useStore } from '../store';
+import { ApiError } from '../api';
+import { ResultadoAnalise, resultadoImpedeEnvio } from '../ml';
 import { ProgressBar, pctColor } from '../components/ui';
 
 export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Profile; unidade: Unidade; onUnidade: (id: number) => void }) {
   const st = useStore();
   const portaria = portariaVigente(st);
   const p = PROFILES[profile];
-  const visiveis = unidadesVisiveis(profile);
+  const visiveis = unidadesVisiveis(profile, st.unidades);
 
   const salvo = st.lancamentos[unidade.id] ?? {};
   const [campos, setCampos] = useState<Campos>(salvo);
+  const [justificativas, setJustificativas] = useState<Record<string, string>>(st.justificativas[unidade.id] ?? {});
+  const [analise, setAnalise] = useState<ResultadoAnalise | null>(null);
+  const [analisando, setAnalisando] = useState(false);
+  const [erroAnalise, setErroAnalise] = useState('');
   const [activeInd, setActiveInd] = useState(0);
   const [aviso, setAviso] = useState('');
+  const versaoAnalise = useRef(0);
 
   const indicadores = indicadoresDaUnidade(unidade, portaria.pesos);
   const ativos = indicadores.filter(i => i.ativo);
@@ -23,13 +30,53 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   const enviada = !!st.enviadas[unidade.id];
   const pesos = portaria.pesos;
 
+  useEffect(() => {
+    const versao = ++versaoAnalise.current;
+    setAnalise(null);
+    setErroAnalise('');
+    setAnalisando(true);
+    const timeout = window.setTimeout(() => {
+      void analisarLancamento(unidade.id, campos)
+        .then(resultado => {
+          if (versaoAnalise.current === versao) setAnalise(resultado);
+        })
+        .catch(error => {
+          if (versaoAnalise.current === versao) {
+            setErroAnalise(error instanceof Error ? error.message : 'Falha ao validar os valores.');
+          }
+        })
+        .finally(() => {
+          if (versaoAnalise.current === versao) setAnalisando(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [unidade.id, campos]);
+
   const setCampo = (id: string, field: 'n' | 'd', val: string) => {
     setAviso('');
     setCampos(prev => ({ ...prev, [id]: { ...(prev[id] ?? { n: '', d: '' }), [field]: val } }));
   };
 
-  const salvar = () => setAviso(salvarLancamento(profile, unidade.id, campos) ? 'Rascunho salvo.' : 'Sem permissão para editar esta unidade.');
-  const enviar = () => setAviso(submeter(profile, unidade.id, campos) ? 'Indicadores submetidos para a CAM.' : 'Não foi possível submeter: preencha todos os subindicadores.');
+  const salvar = async () => {
+    try {
+      await salvarLancamento(unidade.id, campos, justificativas);
+      setAviso('Rascunho salvo no backend.');
+    } catch (error) {
+      setAviso(error instanceof ApiError ? error.message : 'Falha ao salvar o rascunho.');
+    }
+  };
+  const enviar = async () => {
+    try {
+      await submeter(unidade.id, campos, justificativas);
+      setAviso('Indicadores submetidos para a CAM.');
+    } catch (error) {
+      setAviso(error instanceof Error ? error.message : 'Falha ao submeter os indicadores.');
+    }
+  };
+  const resultados = analise?.campos ?? {};
+  const temBloqueio = Object.entries(resultados).some(([id, resultado]) =>
+    resultadoImpedeEnvio(resultado, justificativas[id] ?? ''),
+  );
 
   const ind = indicadores[Math.min(activeInd, indicadores.length - 1)];
   const mi = indicadores.indexOf(ind);
@@ -136,6 +183,26 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
                           <ProgressBar value={Math.min(pct, 100)} color={pct >= sub.meta ? '#10b981' : pct >= 70 ? '#f59e0b' : '#e11d48'} />
                         </div>
                       )}
+                      {resultados[sub.id] && (
+                        <div className={`mt-3 rounded-lg border px-3 py-2 text-[10px] ${resultados[sub.id].severidade === 'invalid' ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                          <p className="font-semibold">
+                            {resultados[sub.id].severidade === 'invalid' ? 'Valor inválido' : `Alerta de consistência · confiança ${Math.round(resultados[sub.id].score * 100)}%`}
+                          </p>
+                          <p className="mt-0.5">{resultados[sub.id].mensagem}</p>
+                          {resultados[sub.id].observacoesHistoricas > 0 && (
+                            <p className="mt-0.5 text-[9px] opacity-80">Comparado com {resultados[sub.id].observacoesHistoricas} lançamentos anteriores submetidos desta unidade.</p>
+                          )}
+                          {resultados[sub.id].precisaJustificativa && (
+                            <label className="mt-2 block font-semibold">
+                              Justificativa técnica obrigatória (mínimo 20 caracteres)
+                              <textarea value={justificativas[sub.id] ?? ''} maxLength={1000}
+                                onChange={event => setJustificativas(prev => ({ ...prev, [sub.id]: event.target.value }))}
+                                rows={2} placeholder="Descreva a origem do dado e o motivo da divergência."
+                                className="mt-1 w-full resize-y rounded-md border border-amber-300 bg-white px-2 py-1.5 font-normal text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-300" />
+                            </label>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -147,12 +214,15 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
         <div className="flex items-center justify-between px-5 py-3.5 border-t border-slate-100 bg-slate-50 gap-3 flex-wrap">
           <p className="text-[11px]">
             {aviso ? <span className="text-slate-600 font-semibold">{aviso}</span>
+              : erroAnalise ? <span className="text-rose-700 font-semibold">{erroAnalise}</span>
+              : analisando ? <span className="text-blue-700 font-semibold">Verificando consistência…</span>
+              : temBloqueio ? <span className="text-rose-700 font-semibold">Corrija os valores inválidos e justifique os alertas para submeter.</span>
               : pronto ? <span className="text-emerald-600 font-semibold">✓ Formulário pronto para submissão</span>
               : <span className="text-amber-600 font-semibold">Preencha todos os subindicadores para submeter.</span>}
           </p>
           <div className="flex items-center gap-2">
-            <button onClick={() => { setCampos(salvo); setAviso(''); }} className="px-3 py-2 border border-slate-300 text-slate-600 text-[11px] font-medium rounded-lg hover:bg-white cursor-pointer">Cancelar</button>
-            <button disabled={!pronto} onClick={enviar}
+            <button onClick={() => { setCampos(salvo); setJustificativas(st.justificativas[unidade.id] ?? {}); setAviso(''); }} className="px-3 py-2 border border-slate-300 text-slate-600 text-[11px] font-medium rounded-lg hover:bg-white cursor-pointer">Cancelar</button>
+            <button disabled={!pronto || !analise || analisando || !!erroAnalise || temBloqueio} onClick={() => { void enviar(); }}
               className="px-4 py-2 bg-[#0f172a] text-white text-[11px] font-semibold rounded-lg hover:bg-[#1e3a8a] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors">
               Submeter para CAM
             </button>

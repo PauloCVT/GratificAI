@@ -1,148 +1,144 @@
-import { useState } from 'react';
-import {
-  CLASS_COLOR, DS_COLORS, Profile, classificar, distritosVisiveis, jurisdicao, preenchimentoEfetivo,
-  statusEfetivo, unidadesVisiveis,
-} from '../domain';
-import { portariaVigente, useStore } from '../store';
+import { useMemo, useState } from 'react';
+import { Usuario } from '../api';
+import { DS_COLORS, DISTRITOS, Profile, PROFILES } from '../domain';
+import { useStore } from '../store';
 import { ProgressBar, pctColor, statusColor } from '../components/ui';
 
-export function DashboardScreen({ profile, onVer }: { profile: Profile; onVer: (unidadeId: number) => void }) {
+export function DashboardScreen({
+  user,
+  onVer,
+  onAdministracao,
+}: {
+  user: Usuario;
+  onVer: (unidadeId: number) => void;
+  onAdministracao: () => void;
+}) {
   const st = useStore();
-  const pesos = portariaVigente(st).pesos;
+  const profile: Profile = user.perfil;
   const [filterDS, setFilterDS] = useState('Todos');
   const [filterSt, setFilterSt] = useState('Todos');
+  const unidades = st.unidades;
+  const distritos = profile === 'cam'
+    ? DISTRITOS
+    : st.distritos.filter(distrito => user.distrito === distrito.id || unidades.some(unidade => unidade.distrito === distrito.id));
+  const distritosComUnidades = distritos.filter(distrito => unidades.some(unidade => unidade.distrito === distrito.id));
+  const mediaPreenchimento = unidades.length
+    ? unidades.reduce((total, unidade) => total + unidade.preenchimento, 0) / unidades.length
+    : null;
+  const enviados = Object.values(st.enviadas).filter(Boolean).length;
+  const filtradas = useMemo(() => unidades.filter(unidade =>
+    (filterDS === 'Todos' || unidade.distrito === filterDS) &&
+    (filterSt === 'Todos' || unidade.status === filterSt),
+  ), [unidades, filterDS, filterSt]);
 
-  const global = profile === 'cam';
-  const distritos = distritosVisiveis(profile);
-  const unidades = unidadesVisiveis(profile).map(u => ({
-    ...u,
-    preenchimento: preenchimentoEfetivo(u, st.lancamentos[u.id], pesos),
-    status: statusEfetivo(u, !!st.enviadas[u.id]),
-  }));
+  const resumoDistritos = distritos.map(distrito => {
+    const daRegiao = unidades.filter(unidade => unidade.distrito === distrito.id);
+    const preenchimento = daRegiao.length
+      ? daRegiao.reduce((total, unidade) => total + unidade.preenchimento, 0) / daRegiao.length
+      : 0;
+    return {
+      ...distrito,
+      unidades: daRegiao.length,
+      enviadas: daRegiao.filter(unidade => st.enviadas[unidade.id]).length,
+      preenchimento,
+    };
+  });
 
-  const totalGestores = distritos.reduce((s, d) => s + d.gestores, 0);
-  const avgGlobal = (distritos.reduce((s, d) => s + d.media, 0) / Math.max(distritos.length, 1)).toFixed(1);
-
-  const filtered = unidades.filter(u =>
-    (filterDS === 'Todos' || u.distrito === filterDS) &&
-    (filterSt === 'Todos' || u.status === filterSt),
-  );
+  const cards = [
+    { label: 'Unidades cadastradas', value: String(unidades.length), sub: 'Registros reais na base', icon: '◈', color: 'text-blue-600', bg: 'bg-blue-50' },
+    { label: 'Distritos com unidades', value: String(distritosComUnidades.length), sub: `${distritos.length} distritos no escopo`, icon: '◉', color: 'text-violet-600', bg: 'bg-violet-50' },
+    { label: 'Lançamentos submetidos', value: String(enviados), sub: mediaPreenchimento === null ? 'Sem dados de desempenho' : `Preenchimento médio ${mediaPreenchimento.toFixed(1)}%`, icon: '◆', color: 'text-emerald-600', bg: 'bg-emerald-50' },
+  ];
 
   return (
-    <div className="p-5 space-y-5">
-      <div>
-        <h1 className="text-xl font-bold text-slate-900" style={{ fontFamily: 'DM Sans,sans-serif' }}>Painel Geral de Desempenho</h1>
-        <p className="text-xs text-slate-500 mt-0.5">
-          {global ? 'Monitorização territorial · DS I ao DS VIII · 3º Quadrimestre 2024' : `Jurisdição: ${jurisdicao(profile)} · 3º Quadrimestre 2024`}
+    <div className="space-y-5 p-5">
+      <header>
+        <h1 className="text-xl font-bold text-slate-900">Painel de desempenho</h1>
+        <p className="mt-1 text-xs text-slate-500">
+          Perfil: {PROFILES[profile].label} · Escopo: {user.distrito ?? user.unidadeNome ?? 'Rede completa'}
         </p>
-      </div>
+      </header>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {[
-          { label: 'Gestores Monitorizados', value: String(totalGestores), sub: `${totalGestores} previstos no ciclo`, icon: '◈', c: 'text-blue-600', bg: 'bg-blue-50' },
-          { label: 'Distritos Parametrizados', value: global ? 'DS I — DS VIII' : distritos.map(d => d.id).join(', '), sub: `${distritos.length} ${distritos.length === 1 ? 'distrito sanitário' : 'distritos sanitários'}`, icon: '◉', c: 'text-violet-600', bg: 'bg-violet-50' },
-          { label: 'Índice Médio Global', value: `${avgGlobal} pts`, sub: classificar(parseFloat(avgGlobal)), icon: '◆', c: `${parseFloat(avgGlobal) >= 80 ? 'text-emerald-600' : parseFloat(avgGlobal) >= 70 ? 'text-blue-600' : parseFloat(avgGlobal) >= 60 ? 'text-amber-600' : 'text-rose-600'}`, bg: `${parseFloat(avgGlobal) >= 80 ? 'bg-emerald-50' : parseFloat(avgGlobal) >= 70 ? 'bg-blue-50' : parseFloat(avgGlobal) >= 60 ? 'bg-amber-50' : 'bg-rose-50'}` },
-        ].map(card => (
-          <div key={card.label} className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {cards.map(card => (
+          <div key={card.label} className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wide">{card.label}</p>
-              <span className={`w-6 h-6 rounded-md ${card.bg} flex items-center justify-center ${card.c} text-sm`}>{card.icon}</span>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{card.label}</p>
+              <span className={`flex h-6 w-6 items-center justify-center rounded-md text-sm ${card.bg} ${card.color}`}>{card.icon}</span>
             </div>
-            <p className="text-lg font-black text-slate-900 font-mono leading-none">{card.value}</p>
+            <p className="font-mono text-lg font-black leading-none text-slate-900">{card.value}</p>
             <p className="text-[10px] text-slate-400">{card.sub}</p>
           </div>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200">
-        <div className="px-5 py-3.5 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-800">{global ? 'Grelha Territorial — DS I a DS VIII' : 'Grelha Territorial — sua jurisdição'}</h3>
-          <p className="text-[10px] text-slate-400 mt-0.5">Faixas: Insuficiente &lt;60% · Regular 60–69% · Satisfatório 70–79% · Excelente ≥80%</p>
+      <section className="rounded-xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 px-5 py-3.5">
+          <h2 className="text-sm font-semibold text-slate-800">Resumo territorial</h2>
+          <p className="mt-0.5 text-[10px] text-slate-400">Indicadores calculados somente a partir dos lançamentos atualmente cadastrados.</p>
         </div>
-        <div className="divide-y divide-slate-50">
-          {distritos.map(ds => {
-            const cls = classificar(ds.media);
-            return (
-              <div key={ds.id} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50 transition-colors">
-                <div className="w-2 h-10 rounded-full shrink-0" style={{ backgroundColor: DS_COLORS[ds.id] }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-slate-800">{ds.nome}</p>
-                  <p className="text-[10px] text-slate-400">{ds.unidades} unidades · {ds.gestores} gestores</p>
-                </div>
-                <div className="w-36 shrink-0 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] text-slate-400 font-mono">preenchimento</span>
-                    <span className="text-[9px] font-mono font-semibold text-slate-600">{ds.preenchimento}%</span>
-                  </div>
-                  <ProgressBar value={ds.preenchimento} color={pctColor(ds.preenchimento)} />
-                </div>
-                <div className="text-right shrink-0">
-                  <p className={`text-base font-black font-mono ${ds.media >= 80 ? 'text-emerald-600' : ds.media >= 70 ? 'text-blue-600' : ds.media >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>{ds.media.toFixed(1)}</p>
-                  <span className={`text-[9px] font-medium px-2 py-0.5 rounded-full border ${CLASS_COLOR[cls]}`}>{cls}</span>
-                </div>
+        {resumoDistritos.length ? <div className="divide-y divide-slate-50">
+          {resumoDistritos.map(distrito => (
+            <div key={distrito.id} className="flex flex-wrap items-center gap-4 px-5 py-3">
+              <div className="h-9 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: DS_COLORS[distrito.id] ?? '#64748b' }} />
+              <div className="min-w-32 flex-1">
+                <p className="text-xs font-semibold text-slate-800">{distrito.nome}</p>
+                <p className="text-[10px] text-slate-400">{distrito.unidades} unidades · {distrito.enviadas} submetidas</p>
               </div>
-            );
-          })}
-        </div>
-      </div>
+              <div className="w-40 space-y-1">
+                <div className="flex justify-between text-[9px] text-slate-400">
+                  <span>preenchimento médio</span>
+                  <span className="font-mono font-semibold text-slate-600">{distrito.unidades ? `${distrito.preenchimento.toFixed(1)}%` : 'Sem dados'}</span>
+                </div>
+                <ProgressBar value={distrito.preenchimento} color={pctColor(distrito.preenchimento)} />
+              </div>
+            </div>
+          ))}
+        </div> : <p className="px-5 py-6 text-xs text-slate-500">Seu perfil ainda não tem distrito ou unidade associados.</p>}
+      </section>
 
-      <div className="bg-white rounded-xl border border-slate-200">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 flex-wrap gap-2">
-          <h3 className="text-sm font-semibold text-slate-800">Status por Unidade de Saúde</h3>
-          <div className="flex items-center gap-2">
-            <select value={filterDS} onChange={e => setFilterDS(e.target.value)}
-              className="text-[11px] border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
-              <option>Todos</option>
-              {distritos.map(d => <option key={d.id}>{d.id}</option>)}
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-3.5">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-800">Unidades no seu escopo</h2>
+            <p className="mt-0.5 text-[10px] text-slate-400">A pontuação final só será exibida quando o cálculo normativo estiver configurado.</p>
+          </div>
+          <div className="flex gap-2">
+            <select value={filterDS} onChange={event => setFilterDS(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600">
+              <option>Todos</option>{distritos.map(distrito => <option key={distrito.id}>{distrito.id}</option>)}
             </select>
-            <select value={filterSt} onChange={e => setFilterSt(e.target.value)}
-              className="text-[11px] border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
-              <option>Todos</option>
-              {['Aprovado', 'Em Análise', 'Pendente', 'Bloqueado'].map(s => <option key={s}>{s}</option>)}
+            <select value={filterSt} onChange={event => setFilterSt(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600">
+              <option>Todos</option><option>Pendente</option><option>Em Análise</option>
             </select>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        {filtradas.length ? <div className="overflow-x-auto">
           <table className="w-full">
             <thead><tr className="border-b border-slate-100">
-              {['Unidade', 'Tipo', 'Responsável', 'Distrito', 'Preench.', 'Nota', 'Status', 'Ações'].map(h => (
-                <th key={h} className="text-left text-[9px] font-semibold text-slate-400 uppercase tracking-wider px-4 py-2.5">{h}</th>
+              {['Unidade', 'Tipo', 'Distrito', 'Preenchimento', 'Status', 'Ações'].map(label => (
+                <th key={label} className="px-4 py-2.5 text-left text-[9px] font-semibold uppercase tracking-wider text-slate-400">{label}</th>
               ))}
             </tr></thead>
-            <tbody>
-              {filtered.map((u, i) => (
-                <tr key={u.id} className={`border-b border-slate-50 hover:bg-slate-50 transition-colors ${i % 2 === 0 ? '' : 'bg-slate-50/30'}`}>
-                  <td className="px-4 py-2.5"><p className="text-xs font-medium text-slate-800">{u.nome}</p></td>
-                  <td className="px-4 py-2.5"><span className="text-[10px] font-mono font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{u.tipo}</span></td>
-                  <td className="px-4 py-2.5"><p className="text-xs text-slate-600">{u.responsavel}</p></td>
-                  <td className="px-4 py-2.5">
-                    <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded" style={{ backgroundColor: DS_COLORS[u.distrito] + '18', color: DS_COLORS[u.distrito] }}>{u.distrito}</span>
-                  </td>
-                  <td className="px-4 py-2.5 w-28">
-                    <div className="flex items-center gap-1.5">
-                      <ProgressBar value={u.preenchimento} color={pctColor(u.preenchimento)} />
-                      <span className="text-[10px] font-mono text-slate-500 w-7 shrink-0">{u.preenchimento}%</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {u.nota != null ? <span className={`text-xs font-mono font-bold ${u.nota >= 80 ? 'text-emerald-600' : u.nota >= 70 ? 'text-blue-600' : u.nota >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>{u.nota.toFixed(1)}</span>
-                      : <span className="text-[10px] text-slate-300 font-mono">—</span>}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${statusColor(u.status)}`}>{u.status}</span>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <button onClick={() => onVer(u.id)} className="text-[10px] px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium transition-colors cursor-pointer">Ver</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+            <tbody>{filtradas.map((unidade, index) => (
+              <tr key={unidade.id} className={`border-b border-slate-50 hover:bg-slate-50 ${index % 2 ? 'bg-slate-50/30' : ''}`}>
+                <td className="px-4 py-2.5 text-xs font-medium text-slate-800">{unidade.nome}</td>
+                <td className="px-4 py-2.5"><span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">{unidade.tipo}</span></td>
+                <td className="px-4 py-2.5"><span className="rounded px-2 py-0.5 font-mono text-[10px] font-semibold" style={{ backgroundColor: `${DS_COLORS[unidade.distrito] ?? '#64748b'}18`, color: DS_COLORS[unidade.distrito] ?? '#475569' }}>{unidade.distrito}</span></td>
+                <td className="w-40 px-4 py-2.5"><div className="flex items-center gap-2"><ProgressBar value={unidade.preenchimento} color={pctColor(unidade.preenchimento)} /><span className="w-8 shrink-0 font-mono text-[10px] text-slate-500">{unidade.preenchimento}%</span></div></td>
+                <td className="px-4 py-2.5"><span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusColor(unidade.status)}`}>{unidade.status}</span></td>
+                <td className="px-4 py-2.5"><button onClick={() => onVer(unidade.id)} className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-200">Abrir</button></td>
+              </tr>
+            ))}</tbody>
           </table>
-        </div>
-        <div className="px-5 py-2.5 border-t border-slate-100">
-          <p className="text-[10px] text-slate-400">{filtered.length} de {unidades.length} unidades exibidas</p>
-        </div>
-      </div>
+        </div> : (
+          <div className="px-5 py-8 text-center">
+            <p className="text-sm font-semibold text-slate-700">A base está limpa</p>
+            <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">Não há unidades ou dados demonstrativos cadastrados neste escopo. Cadastre unidades e contas para começar.</p>
+            {profile === 'cam' && <button onClick={onAdministracao} className="mt-4 rounded-lg bg-[#0f172a] px-4 py-2 text-xs font-semibold text-white">Abrir cadastros da CAM</button>}
+          </div>
+        )}
+        <div className="border-t border-slate-100 px-5 py-2.5"><p className="text-[10px] text-slate-400">{filtradas.length} de {unidades.length} unidades exibidas</p></div>
+      </section>
     </div>
   );
 }

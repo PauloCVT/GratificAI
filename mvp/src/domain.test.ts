@@ -1,97 +1,58 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  Campos, UNIDADES, buildIndicadores, distritosVisiveis, indicadoresDaUnidade, pesosPadrao, pesosValidos,
-  podeEditarUnidade, preenchimentoEfetivo, unidadesVisiveis,
+  Campos, buildIndicadores, indicadoresDaUnidade, pctDe, pesosPadrao, pesosValidos,
 } from './domain';
-import { criarPortaria, definirVigente, getState, portariaVigente, publicarPortaria, resetar, salvarLancamento, submeter } from './store';
+import { analisarCampos, resultadoImpedeEnvio } from './ml';
 
-beforeEach(() => resetar());
+const unidade = { id: 1, nome: 'Unidade de teste', tipo: 'USF', distrito: 'DS I', status: 'Pendente' as const, preenchimento: 0, nota: null };
 
-const un = (id: number) => UNIDADES.find(u => u.id === id)!;
-const preencherTudo = (unidade: typeof UNIDADES[number]): Campos =>
-  Object.fromEntries(
-    indicadoresDaUnidade(unidade, portariaVigente().pesos).flatMap(m => m.subs).map(s => [s.id, { n: '8', d: '10' }]),
-  );
-
-describe('História 1 — RBAC', () => {
-  it('CAM enxerga a rede inteira', () => {
-    expect(unidadesVisiveis('cam')).toHaveLength(UNIDADES.length);
-    expect(distritosVisiveis('cam')).toHaveLength(8);
+describe('Indicadores e regras de domínio', () => {
+  it('monta os subindicadores operacionais da USF sem depender de registros de demonstração', () => {
+    expect(indicadoresDaUnidade(unidade, pesosPadrao())[3].subs).toHaveLength(11);
   });
 
-  it('gestor distrital enxerga só o próprio distrito', () => {
-    const v = unidadesVisiveis('gg');
-    expect(v.length).toBeGreaterThan(0);
-    expect(v.every(u => u.distrito === 'DS I')).toBe(true);
-    expect(distritosVisiveis('gg').map(d => d.id)).toEqual(['DS I']);
+  it('exige pesos que somem 100% em cada linha', () => {
+    const pesos = pesosPadrao();
+    expect(pesosValidos(pesos)).toBe(true);
+    pesos.usf = [20, 20, 20, 30, 0];
+    expect(pesosValidos(pesos)).toBe(false);
   });
 
-  it('técnico de área enxerga só a própria unidade', () => {
-    expect(unidadesVisiveis('usf').map(u => u.id)).toEqual([1]);
-  });
-
-  it('bloqueia edição fora da jurisdição (também no store)', () => {
-    expect(podeEditarUnidade('gg', 3)).toBe(false);
-    expect(salvarLancamento('gg', 3, { '1.1': { n: '1', d: '2' } })).toBe(false);
-    expect(getState().lancamentos[3]).toBeUndefined();
-    expect(salvarLancamento('gg', 1, { '1.1': { n: '1', d: '2' } })).toBe(true);
-  });
-});
-
-describe('História 2 — Lançamento de indicadores', () => {
-  it('USF exibe os 11 subindicadores do Ind 4', () => {
-    const ind4 = indicadoresDaUnidade(un(1), pesosPadrao())[3];
-    expect(ind4.subs).toHaveLength(11);
-  });
-
-  it('persiste o lançamento e atualiza o preenchimento', () => {
-    const c: Campos = { '1.1': { n: '9', d: '10' } };
-    expect(salvarLancamento('usf', 1, c)).toBe(true);
-    expect(getState().lancamentos[1]).toEqual(c);
-    expect(preenchimentoEfetivo(un(1), getState().lancamentos[1], pesosPadrao())).toBeLessThan(100);
-  });
-
-  it('só submete com todos os subindicadores preenchidos', () => {
-    expect(submeter('usf', 1, { '1.1': { n: '9', d: '10' } })).toBe(false);
-    expect(submeter('usf', 1, preencherTudo(un(1)))).toBe(true);
-    expect(getState().enviadas[1]).toBe(true);
-  });
-});
-
-describe('História 3 — Ajuste de pesos e regras pela CAM', () => {
-  it('pesos precisam somar 100% por linha', () => {
-    const p = pesosPadrao();
-    expect(pesosValidos(p)).toBe(true);
-    p.usf = [20, 20, 20, 30, 0];
-    expect(pesosValidos(p)).toBe(false);
-  });
-
-  it('só a CAM publica; pesos inválidos são recusados', () => {
-    const base = portariaVigente();
-    const novos = { ...base.pesos, usf: [10, 20, 20, 50, 0] };
-    expect(publicarPortaria('gg', base.id, novos, base.regras)).toBe(false);
-    expect(publicarPortaria('cam', base.id, { ...base.pesos, usf: [10, 10, 10, 10, 0] }, base.regras)).toBe(false);
-    expect(publicarPortaria('cam', base.id, novos, base.regras)).toBe(true);
-    expect(portariaVigente().pesos.usf).toEqual([10, 20, 20, 50, 0]);
-  });
-
-  it('novo peso se reflete nos indicadores do lançamento (sem mexer no código)', () => {
-    const base = portariaVigente();
-    publicarPortaria('cam', base.id, { ...base.pesos, usf: [0, 20, 20, 60, 0] }, base.regras);
-    const macros = indicadoresDaUnidade(un(1), portariaVigente().pesos);
-    expect(macros[0].ativo).toBe(false);
-  });
-
-  it('cria nova portaria a partir da vigente e a torna vigente', () => {
-    expect(criarPortaria('gg', 'X')).toBeNull();
-    const id = criarPortaria('cam', 'Portaria 05/2025')!;
-    expect(getState().portarias).toHaveLength(3);
-    expect(portariaVigente().id).toBe(id);
-    expect(definirVigente('cam', 'cam-1.2')).toBe(true);
-  });
-
-  it('Ind 5 só aparece quando o peso é maior que zero', () => {
+  it('não ativa indicadores sem peso', () => {
     expect(buildIndicadores('usf', [20, 20, 20, 40, 0])[4].ativo).toBe(false);
     expect(buildIndicadores('usf', [20, 20, 20, 20, 20])[4].subs).toHaveLength(3);
+  });
+
+  it('não interpreta texto parcial como número e aceita decimal com vírgula', () => {
+    expect(pctDe({ n: '10abc', d: '20' })).toBeNull();
+    expect(pctDe({ n: '0x10', d: '20' })).toBeNull();
+    expect(pctDe({ n: '1,5', d: '3' })).toBe(50);
+  });
+});
+
+describe('Validação inteligente dos lançamentos', () => {
+  const indicadores = indicadoresDaUnidade(unidade, pesosPadrao());
+
+  it('bloqueia razões impossíveis, inclusive no fluxo de submissão', () => {
+    const campos: Campos = { '4.1.1': { n: '12', d: '10' } };
+    const resultado = analisarCampos(indicadores, campos).campos['4.1.1'];
+    expect(resultado.severidade).toBe('invalid');
+    expect(resultadoImpedeEnvio(resultado)).toBe(true);
+  });
+
+  it('detecta discrepâncias em relação a três observações anteriores da unidade', () => {
+    const campos: Campos = { '4.1.1': { n: '1', d: '10' } };
+    const historico = Array.from({ length: 3 }, () => ({ subId: '4.1.1', valor: 90 }));
+    const resultado = analisarCampos(indicadores, campos, historico).campos['4.1.1'];
+    expect(resultado.severidade).toBe('warning');
+    expect(resultado.observacoesHistoricas).toBe(3);
+    expect(resultadoImpedeEnvio(resultado)).toBe(true);
+    expect(resultadoImpedeEnvio(resultado, 'Auditoria confirmou alteração na população elegível.')).toBe(false);
+  });
+
+  it('sinaliza ausência total de requisições e exige justificativa técnica', () => {
+    const resultado = analisarCampos(indicadores, { '1.1': { n: '0', d: '12' } }).campos['1.1'];
+    expect(resultado.severidade).toBe('warning');
+    expect(resultadoImpedeEnvio(resultado, '')).toBe(true);
   });
 });

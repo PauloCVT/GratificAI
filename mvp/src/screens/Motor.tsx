@@ -10,9 +10,17 @@ export function MotorScreen({ profile }: { profile: Profile }) {
   const vigente = portariaVigente(st);
   const [novaAberta, setNovaAberta] = useState(false);
   const [nomeNova, setNomeNova] = useState('');
+  const [aviso, setAviso] = useState('');
 
-  const criar = () => {
-    if (criarPortaria(profile, nomeNova)) { setNovaAberta(false); setNomeNova(''); }
+  const criar = async () => {
+    try {
+      await criarPortaria(nomeNova);
+      setNovaAberta(false);
+      setNomeNova('');
+      setAviso('Nova portaria criada e ativada.');
+    } catch (error) {
+      setAviso(error instanceof Error ? error.message : 'Falha ao criar a portaria.');
+    }
   };
 
   return (
@@ -24,7 +32,7 @@ export function MotorScreen({ profile }: { profile: Profile }) {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <label className="text-[10px] text-slate-500 font-medium">Versão Normativa:</label>
-          <select value={vigente.id} onChange={e => definirVigente(profile, e.target.value)}
+          <select value={vigente.id} onChange={e => { void definirVigente(e.target.value).catch(error => setAviso(error instanceof Error ? error.message : 'Falha ao ativar a portaria.')); }}
             className="text-xs border border-slate-300 rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 font-semibold">
             {st.portarias.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
           </select>
@@ -37,6 +45,7 @@ export function MotorScreen({ profile }: { profile: Profile }) {
         </div>
       </div>
 
+      {aviso && <p role="status" className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-medium text-blue-800">{aviso}</p>}
       <Editor key={vigente.id} profile={profile} portaria={vigente} />
 
       {novaAberta && (
@@ -69,8 +78,13 @@ function Editor({ profile, portaria }: { profile: Profile; portaria: Portaria })
   const alterado = JSON.stringify({ pesos, regras }) !== JSON.stringify({ pesos: portaria.pesos, regras: portaria.regras });
   const valido = pesosValidos(pesos) && regrasValidas(regras);
 
-  const publicar = () => {
-    setMsg(publicarPortaria(profile, portaria.id, pesos, regras) ? 'Parametrização publicada — os lançamentos já usam os novos pesos.' : 'Não foi possível publicar: confira os valores.');
+  const publicar = async () => {
+    try {
+      await publicarPortaria(portaria.id, pesos, regras);
+      setMsg('Parametrização publicada no backend.');
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : 'Não foi possível publicar a parametrização.');
+    }
   };
   const setRegra = (k: keyof Regras, v: string) => { setMsg(''); setRegras(r => ({ ...r, [k]: v === '' ? NaN : Number(v) })); };
 

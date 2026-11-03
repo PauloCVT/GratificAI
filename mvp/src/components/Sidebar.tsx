@@ -5,6 +5,7 @@ export function Sidebar({ screen, onNav, profile }: { screen:Screen; onNav:(s:Sc
     { id:'dashboard'  as Screen, icon:'⊞', label:'Painel Geral' },
     { id:'indicadores'as Screen, icon:'⊟', label:'Lançamento' },
     { id:'motor'      as Screen, icon:'⊙', label:'Motor de Regras', cam:true },
+    { id:'administracao' as Screen, icon:'⚙', label:'Usuários e Unidades', cam:true },
   ].filter(n => !n.cam || profile === 'cam');
   return (
     <aside className="w-56 shrink-0 bg-[#0f172a] flex flex-col h-screen sticky top-0">
@@ -31,12 +32,9 @@ export function Sidebar({ screen, onNav, profile }: { screen:Screen; onNav:(s:Sc
       </nav>
       <div className="px-3 py-3 border-t border-white/10">
         <div className="bg-white/8 rounded-lg p-3 space-y-1">
-          <p className="text-white/40 text-[9px] font-mono uppercase tracking-wider">Ciclo Vigente</p>
-          <p className="text-white font-semibold text-xs">3º Quad. 2024</p>
-          <div className="flex items-center gap-1.5 pt-0.5">
-            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"/>
-            <span className="text-emerald-300 text-[10px] font-mono">Aberto · 214 gestores</span>
-          </div>
+          <p className="text-white/40 text-[9px] font-mono uppercase tracking-wider">Ambiente</p>
+          <p className="text-white font-semibold text-xs">Base sem dados demonstrativos</p>
+          <p className="text-white/40 text-[10px]">Unidades e contas são cadastradas pela CAM.</p>
         </div>
       </div>
       <div className="px-3 py-2.5 border-t border-white/10">

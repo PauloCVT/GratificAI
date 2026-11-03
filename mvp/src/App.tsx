@@ -1,37 +1,127 @@
-import { useState } from 'react';
-import { PROFILES, Profile, Screen, UNIDADES, unidadesVisiveis } from './domain';
+import { useEffect, useState } from 'react';
+import { ApiError, Usuario, loginApi, logoutApi, obterSessaoApi, verificarSetupApi } from './api';
+import { Profile, Screen, PROFILES } from './domain';
+import { carregarEstado, limparEstadoLocal, useStore } from './store';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { DashboardScreen } from './screens/Dashboard';
 import { IndicadoresScreen } from './screens/Lancamento';
 import { MotorScreen } from './screens/Motor';
+import { LoginScreen, TrocaSenhaObrigatoria } from './screens/Login';
+import { AdministracaoScreen } from './screens/Administracao';
 
 export default function App() {
-  const [profile, setProfile] = useState<Profile>('cam');
+  const [user, setUser] = useState<Usuario | null>(null);
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [unidadeSel, setUnidadeSel] = useState<number | null>(null);
+  const [iniciando, setIniciando] = useState(true);
+  const [erroSessao, setErroSessao] = useState('');
+  const [erroOperacao, setErroOperacao] = useState('');
+  const st = useStore();
 
-  const handleProfile = (p: Profile) => {
-    setProfile(p);
-    const allowed = PROFILES[p].screens;
-    if (!allowed.includes(screen)) setScreen(allowed[0]);
+  useEffect(() => {
+    let ativo = true;
+    void obterSessaoApi()
+      .then(sessao => { if (ativo && sessao.user) setUser(sessao.user); })
+      .catch(async error => {
+        if (!ativo) return;
+        try {
+          const setup = await verificarSetupApi();
+          if (setup.setupRequired) setErroSessao('');
+          else setErroSessao(error instanceof Error ? error.message : 'Falha ao validar a sessão.');
+        } catch {
+          setErroSessao('Não foi possível conectar ao backend.');
+        }
+      })
+      .finally(() => { if (ativo) setIniciando(false); });
+    return () => { ativo = false; };
+  }, []);
+
+  useEffect(() => {
+    const encerrarSessao = () => {
+      setUser(null);
+      setScreen('dashboard');
+      limparEstadoLocal();
+    };
+    window.addEventListener('gratificai:unauthorized', encerrarSessao);
+    return () => window.removeEventListener('gratificai:unauthorized', encerrarSessao);
+  }, []);
+
+  useEffect(() => {
+    if (user && !user.deveTrocarSenha) void carregarEstado().catch(() => undefined);
+  }, [user]);
+
+  const perfil: Profile = user?.perfil ?? 'cam';
+  const allowed = PROFILES[perfil].screens;
+  const onLogin = async (email: string, senha: string) => {
+    const sessao = await loginApi(email, senha);
+    setUser(sessao.user);
+    setScreen('dashboard');
+  };
+  const sair = async () => {
+    try {
+      await logoutApi();
+      setUser(null);
+      setScreen('dashboard');
+      limparEstadoLocal();
+    } catch (error) {
+      setErroOperacao(error instanceof Error ? error.message : 'Não foi possível encerrar a sessão no servidor.');
+    }
   };
 
-  // A unidade selecionada só vale se estiver na jurisdição do perfil atual.
-  const visiveis = unidadesVisiveis(profile);
-  const unidade = visiveis.find(u => u.id === unidadeSel) ?? visiveis[0] ?? UNIDADES[0];
+  if (iniciando) return <div className="flex h-screen items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Verificando sessão…</div>;
+  if (!user) {
+    return (
+      <>
+        {erroSessao && <div role="alert" className="fixed inset-x-0 top-0 z-10 bg-rose-700 px-4 py-2 text-center text-xs text-white">{erroSessao}</div>}
+        <LoginScreen onLogin={onLogin} />
+      </>
+    );
+  }
+  if (user.deveTrocarSenha) {
+    return <TrocaSenhaObrigatoria onChanged={novoUsuario => setUser(novoUsuario)} />;
+  }
+  if (st.carregando) return <div className="flex h-screen items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Carregando dados autorizados…</div>;
+  if (st.erro) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-100 p-5">
+        <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 text-center shadow-sm">
+          <h1 className="text-sm font-bold text-slate-900">Não foi possível carregar os dados</h1>
+          <p className="mt-2 text-xs text-rose-700">{st.erro}</p>
+          <button onClick={() => { void carregarEstado().catch(() => undefined); }}
+            className="mt-4 rounded-lg bg-[#0f172a] px-4 py-2 text-xs font-semibold text-white hover:bg-[#1e3a8a]">
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-100">
-      <Sidebar screen={screen} onNav={setScreen} profile={profile} />
+      <Sidebar screen={screen} onNav={setScreen} profile={perfil} />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header profile={profile} onChange={handleProfile} />
+        <Header user={user} onLogout={() => { void sair(); }} />
+        {erroOperacao && <p role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-800">{erroOperacao}</p>}
         <main className="flex-1 overflow-y-auto">
-          {screen === 'dashboard' && <DashboardScreen profile={profile} onVer={id => { setUnidadeSel(id); setScreen('indicadores'); }} />}
-          {screen === 'indicadores' && <IndicadoresScreen key={`${profile}-${unidade.id}`} profile={profile} unidade={unidade} onUnidade={setUnidadeSel} />}
-          {screen === 'motor' && profile === 'cam' && <MotorScreen profile={profile} />}
+          {screen === 'dashboard' && <DashboardScreen user={user} onVer={id => { setUnidadeSel(id); setScreen('indicadores'); }} onAdministracao={() => setScreen('administracao')} />}
+          {screen === 'indicadores' && (
+            st.unidades.length
+              ? <IndicadoresScreen key={`${perfil}-${unidadeSel ?? st.unidades[0].id}`} profile={perfil} unidade={st.unidades.find(unit => unit.id === unidadeSel) ?? st.unidades[0]} onUnidade={setUnidadeSel} />
+              : <EmptyState title="Nenhuma unidade autorizada" message="A CAM deve cadastrar unidades e vincular a sua conta à unidade correspondente." />
+          )}
+          {screen === 'motor' && perfil === 'cam' && <MotorScreen profile={perfil} />}
+          {screen === 'administracao' && perfil === 'cam' && <AdministracaoScreen />}
+          {!allowed.includes(screen) && <EmptyState title="Acesso não disponível" message="Seu perfil não tem permissão para abrir esta área." />}
         </main>
       </div>
     </div>
   );
+}
+
+function EmptyState({ title, message }: { title: string; message: string }) {
+  return <section className="m-6 rounded-xl border border-slate-200 bg-white p-8 text-center">
+    <h1 className="text-sm font-bold text-slate-800">{title}</h1>
+    <p className="mt-2 text-xs text-slate-500">{message}</p>
+  </section>;
 }
