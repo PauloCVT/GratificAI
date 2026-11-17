@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { abrirBanco, criarServidorApi, provisionarCAMInicial } from './app.mjs';
 
 let db;
 let server;
 let baseUrl;
 let cam;
+let logger;
 const camEmail = 'admin@example.test';
 const camPasswordInitial = 'InitialCam2026!Strong';
 let camPassword;
@@ -13,7 +14,8 @@ beforeEach(async () => {
   db = abrirBanco(':memory:');
   camPassword = camPasswordInitial;
   await provisionarCAMInicial(db, { email: camEmail, senha: camPasswordInitial });
-  server = criarServidorApi(db);
+  logger = { info: vi.fn() };
+  server = criarServidorApi(db, { logger });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   cam = await login(camEmail, camPasswordInitial);
@@ -107,6 +109,15 @@ describe('Autenticação e persistência GratificAI', () => {
   it('valida credenciais, usa cookie HttpOnly e bloqueia tentativas repetidas', async () => {
     const negado = await requisitar('/api/auth/login', { metodo: 'POST', corpo: { email: camEmail, senha: 'senha-incorreta' } });
     expect(negado.status).toBe(401);
+    const senhaExcessiva = await requisitar('/api/auth/login', {
+      metodo: 'POST', corpo: { email: camEmail, senha: 'X'.repeat(257) },
+    });
+    expect(senhaExcessiva.status).toBe(401);
+    const emailExcessivo = await requisitar('/api/auth/login', {
+      metodo: 'POST', corpo: { email: `${'x'.repeat(255)}@example.test`, senha: 'wrong' },
+    });
+    expect(emailExcessivo.status).toBe(401);
+    expect((await criarConta({ email: `${'x'.repeat(255)}@example.test` })).status).toBe(400);
     const loginCorreto = await requisitar('/api/auth/login', { metodo: 'POST', corpo: { email: camEmail, senha: camPassword } });
     expect(loginCorreto.status).toBe(200);
     expect(loginCorreto.headers.get('set-cookie')).toContain('HttpOnly');
@@ -120,6 +131,25 @@ describe('Autenticação e persistência GratificAI', () => {
     expect((await requisitar('/api/auth/login', { metodo: 'POST', corpo: { email, senha: 'wrong' } })).status).toBe(429);
   });
 
+  it('registra acessos sem incluir IDs específicos, credenciais ou dados enviados', async () => {
+    logger.info.mockClear();
+    const resposta = await requisitar('/api/unidades/123/draft', {
+      metodo: 'POST', corpo: { campos: { pessoal: 'não deve ir ao log' }, senha: 'Secret2026!' },
+    });
+    expect(resposta.status).toBe(401);
+    const registro = logger.info.mock.calls
+      .map(([mensagem]) => JSON.parse(mensagem))
+      .find(item => item.event === 'api_access');
+    expect(registro).toMatchObject({
+      method: 'POST',
+      route: '/api/unidades/:id/draft',
+      status: 401,
+    });
+    expect(JSON.stringify(registro)).not.toContain('123');
+    expect(JSON.stringify(registro)).not.toContain('Secret2026!');
+    expect(JSON.stringify(registro)).not.toContain('não deve ir ao log');
+  });
+
   it('exige token CSRF nas operações de escrita', async () => {
     const resposta = await requisitar('/api/unidades', { sessao: cam, metodo: 'POST', csrf: false, corpo: { nome: 'X', tipo: 'USF', distrito: 'DS I' } });
     expect(resposta.status).toBe(403);
@@ -129,6 +159,20 @@ describe('Autenticação e persistência GratificAI', () => {
       corpo: { nome: 'X', tipo: 'USF', distrito: 'DS I' },
     });
     expect(origemNegada.status).toBe(403);
+  });
+
+  it('rejeita origens HTTP ou com caminho quando configurado para produção', () => {
+    const nodeEnvAnterior = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() => criarServidorApi(db, { allowedOrigins: ['http://example.test'] }))
+        .toThrow('Em produção, configure somente origens HTTPS válidas em APP_ORIGIN.');
+      expect(() => criarServidorApi(db, { allowedOrigins: ['https://example.test/app'] }))
+        .toThrow('Em produção, configure somente origens HTTPS válidas em APP_ORIGIN.');
+    } finally {
+      if (nodeEnvAnterior === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = nodeEnvAnterior;
+    }
   });
 
   it('cria escopos de distrito/unidade e aplica autorização no servidor', async () => {
@@ -163,6 +207,8 @@ describe('Autenticação e persistência GratificAI', () => {
     const enviado = await requisitar(`/api/unidades/${unidade.id}/submit`, { sessao: user, metodo: 'POST', corpo: { campos, justificativas } });
     expect(enviado.status).toBe(200);
     expect(enviado.body.enviadas[unidade.id]).toBe(true);
+    const auditoriaLancamento = db.prepare("SELECT detalhes FROM auditoria WHERE acao = 'lancamento_submetido'").get();
+    expect(auditoriaLancamento.detalhes).not.toContain(justificativas['2.2']);
 
     const discrepantes = { ...campos, '4.1.1': { n: '1', d: '10' } };
     for (let observacao = 0; observacao < 2; observacao++) {

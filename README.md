@@ -36,6 +36,8 @@ O arquivo `.sqlite` existente é persistente e pode conter dados reais. Faça um
 
 ## Autenticação e segurança
 
+Consulte [SEGURANCA.md](./SEGURANCA.md) para o inventário e classificação preliminares, matriz de riscos, fluxo RBAC, evidências, limitações e checklist de implantação. A validação institucional e o aceite dos riscos residuais continuam pendentes.
+
 - Senhas armazenadas com scrypt e salt exclusivo; requisitos mínimos de complexidade e troca de senha autenticada.
 - Sessões opacas no servidor, expiradas após oito horas; cookie `HttpOnly`, `SameSite=Strict`, `Secure` em produção.
 - Tokens CSRF para operações mutáveis, verificação de origem configurada e limitação de tentativas de login.

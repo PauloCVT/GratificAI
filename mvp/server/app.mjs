@@ -172,7 +172,9 @@ export async function provisionarCAMInicial(db, { email, nome = 'Administrador C
   }
   if (!validarSenha(senha)) throw new Error('A senha inicial deve ter pelo menos 12 caracteres, uma letra maiúscula, uma minúscula e um número.');
   const emailNormalizado = typeof email === 'string' ? email.trim().toLowerCase() : '';
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalizado)) throw new Error('Informe um e-mail válido para a conta CAM inicial.');
+  if (emailNormalizado.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalizado)) {
+    throw new Error('Informe um e-mail válido para a conta CAM inicial.');
+  }
   const senhaHash = await hashSenha(senha);
   const criadoEm = new Date().toISOString();
   db.prepare(`
@@ -192,6 +194,26 @@ function enviar(res, status, corpo, headers = {}) {
     ...headers,
   });
   res.end(JSON.stringify(corpo));
+}
+
+function rotaParaLog(pathname) {
+  const rotasFixas = new Set([
+    '/api/health', '/api/auth/setup', '/api/auth/login', '/api/auth/session',
+    '/api/auth/logout', '/api/auth/password', '/api/state', '/api/unidades',
+    '/api/usuarios', '/api/portarias',
+  ]);
+  if (rotasFixas.has(pathname)) return pathname;
+
+  const unidade = pathname.match(/^\/api\/unidades\/\d+\/(analyze|draft|submit)$/);
+  if (unidade) return `/api/unidades/:id/${unidade[1]}`;
+
+  const usuario = pathname.match(/^\/api\/usuarios\/[0-9a-f-]{36}\/(activate|deactivate)$/i);
+  if (usuario) return `/api/usuarios/:id/${usuario[1]}`;
+
+  const portaria = pathname.match(/^\/api\/portarias\/[^/]+(?:\/(activate))?$/);
+  if (portaria) return `/api/portarias/:id${portaria[1] ? '/activate' : ''}`;
+
+  return '/other';
 }
 
 async function lerJson(req) {
@@ -369,7 +391,8 @@ function registrarAuditoria(db, usuarioId, acao, detalhes = {}) {
 
 function validarNovaConta(body, db) {
   if (!ehObjeto(body) || typeof body.nome !== 'string' || !body.nome.trim() || body.nome.length > 120 ||
-    typeof body.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
+    typeof body.email !== 'string' || body.email.trim().length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
     !validarSenha(body.senha) || !Object.hasOwn(PROFILES, body.perfil)) {
     return 'Informe nome, e-mail válido, perfil e senha com pelo menos 12 caracteres, letras maiúsculas/minúsculas e número.';
   }
@@ -396,9 +419,30 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
     (configuracao.allowedOrigins ?? (process.env.APP_ORIGIN ? [process.env.APP_ORIGIN] : ['http://localhost:5173', 'http://127.0.0.1:5173']))
       .map(origin => origin.replace(/\/$/, '')),
   );
+  if (process.env.NODE_ENV === 'production' && [...allowedOrigins].some(origin => {
+    try {
+      const parsed = new URL(origin);
+      return parsed.protocol !== 'https:' || parsed.origin !== origin;
+    } catch {
+      return true;
+    }
+  })) {
+    throw new Error('Em produção, configure somente origens HTTPS válidas em APP_ORIGIN.');
+  }
   const secureCookie = configuracao.secureCookie ?? process.env.NODE_ENV === 'production';
+  const logger = configuracao.logger ?? console;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    const inicio = Date.now();
+    res.on('finish', () => {
+      logger.info(JSON.stringify({
+        event: 'api_access',
+        method: req.method ?? 'GET',
+        route: rotaParaLog(url.pathname),
+        status: res.statusCode,
+        durationMs: Date.now() - inicio,
+      }));
+    });
     const mutavel = !['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? 'GET');
     if (process.env.NODE_ENV === 'production') {
       res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains');
@@ -420,17 +464,19 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
 
       if (req.method === 'POST' && url.pathname === '/api/auth/login') {
         const body = await lerJson(req);
-        const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+        const emailRecebido = typeof body?.email === 'string' ? body.email : '';
+        const email = emailRecebido.length <= 254 ? emailRecebido.trim().toLowerCase() : '';
         const senha = typeof body?.senha === 'string' ? body.senha : '';
         const tentativa = limitarTentativas(req, email);
         if (tentativa.bloqueado) return enviar(res, 429, { error: 'Muitas tentativas de acesso. Aguarde 15 minutos antes de tentar novamente.' });
 
-        const usuario = db.prepare(`
+        const usuario = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? db.prepare(`
           SELECT u.*, un.nome AS unidade_nome
           FROM usuarios u LEFT JOIN unidades un ON un.id = u.unidade_id
           WHERE u.email = ? AND u.ativo = 1
-        `).get(email);
-        const senhaConfere = await conferirSenha(senha, usuario?.senha_hash ?? DUMMY_PASSWORD_HASH);
+        `).get(email) : undefined;
+        const senhaConfere = senha.length <= 256 &&
+          await conferirSenha(senha, usuario?.senha_hash ?? DUMMY_PASSWORD_HASH);
         const valido = Boolean(usuario && senhaConfere);
         if (!valido) {
           falhaLogin(tentativa.key);
@@ -559,7 +605,7 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           registrarAuditoria(db, usuario.id, 'lancamento_submetido', {
             unidadeId, modelo: analise.modelo,
             scoreMaximo: Math.max(0, ...Object.values(analise.campos).map(item => item.score)),
-            justificativas,
+            indicadoresJustificados: Object.keys(justificativas),
           });
           db.exec('COMMIT');
         } catch (error) {
