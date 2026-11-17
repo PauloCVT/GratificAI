@@ -122,6 +122,10 @@ export function abrirBanco(caminho = 'data/gratificai.sqlite') {
       campos TEXT NOT NULL,
       justificativas TEXT NOT NULL,
       enviado INTEGER NOT NULL DEFAULT 0 CHECK (enviado IN (0, 1)),
+      status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado')),
+      parecer_cam TEXT,
+      revisado_por TEXT REFERENCES usuarios(id),
+      revisado_em TEXT,
       atualizado_em TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS historico (
@@ -129,7 +133,8 @@ export function abrirBanco(caminho = 'data/gratificai.sqlite') {
       unidade_id INTEGER NOT NULL REFERENCES unidades(id) ON DELETE CASCADE,
       sub_id TEXT NOT NULL,
       valor REAL NOT NULL,
-      submetido_em TEXT NOT NULL
+      submetido_em TEXT NOT NULL,
+      aprovado INTEGER NOT NULL DEFAULT 0 CHECK (aprovado IN (0, 1))
     );
     CREATE INDEX IF NOT EXISTS historico_unidade_indicador
       ON historico (unidade_id, sub_id, id);
@@ -153,6 +158,18 @@ export function abrirBanco(caminho = 'data/gratificai.sqlite') {
   if (!colunasUsuario.includes('deve_trocar_senha')) {
     db.exec('ALTER TABLE usuarios ADD COLUMN deve_trocar_senha INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1))');
   }
+  const colunasLancamento = db.prepare('PRAGMA table_info(lancamentos)').all().map(coluna => coluna.name);
+  if (!colunasLancamento.includes('status')) {
+    db.exec("ALTER TABLE lancamentos ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado'))");
+  }
+  if (!colunasLancamento.includes('parecer_cam')) db.exec('ALTER TABLE lancamentos ADD COLUMN parecer_cam TEXT');
+  if (!colunasLancamento.includes('revisado_por')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_por TEXT REFERENCES usuarios(id)');
+  if (!colunasLancamento.includes('revisado_em')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_em TEXT');
+  const colunasHistorico = db.prepare('PRAGMA table_info(historico)').all().map(coluna => coluna.name);
+  if (!colunasHistorico.includes('aprovado')) {
+    db.exec('ALTER TABLE historico ADD COLUMN aprovado INTEGER NOT NULL DEFAULT 0 CHECK (aprovado IN (0, 1))');
+  }
+  db.prepare("UPDATE lancamentos SET status = 'em_analise' WHERE enviado = 1 AND status = 'pendente'").run();
 
   const inserirDistrito = db.prepare('INSERT OR IGNORE INTO distritos (id, nome) VALUES (?, ?)');
   for (const distrito of distritosBase) inserirDistrito.run(distrito.id, distrito.nome);
@@ -204,7 +221,7 @@ function rotaParaLog(pathname) {
   ]);
   if (rotasFixas.has(pathname)) return pathname;
 
-  const unidade = pathname.match(/^\/api\/unidades\/\d+\/(analyze|draft|submit)$/);
+  const unidade = pathname.match(/^\/api\/unidades\/\d+\/(analyze|draft|submit|review)$/);
   if (unidade) return `/api/unidades/:id/${unidade[1]}`;
 
   const usuario = pathname.match(/^\/api\/usuarios\/[0-9a-f-]{36}\/(activate|deactivate)$/i);
@@ -334,16 +351,31 @@ function carregarEstado(db, usuario) {
   const pesos = carregarPortariaVigente(db).pesos;
 
   for (const unidade of unidades) {
-    const registro = db.prepare('SELECT campos, justificativas, enviado FROM lancamentos WHERE unidade_id = ?').get(unidade.id);
+    const registro = db.prepare(`
+      SELECT l.campos, l.justificativas, l.status, l.parecer_cam, l.revisado_em,
+        u.nome AS revisado_por_nome
+      FROM lancamentos l
+      LEFT JOIN usuarios u ON u.id = l.revisado_por
+      WHERE l.unidade_id = ?
+    `).get(unidade.id);
     const campos = registro ? JSON.parse(registro.campos) : {};
     const indicadores = indicadoresDaUnidade(unidade, pesos);
     const preenchimento = progressoDe(indicadores, campos).pct;
-    unidade.status = registro?.enviado ? 'Em Análise' : 'Pendente';
+    const status = registro?.status ?? 'pendente';
+    unidade.status = {
+      pendente: 'Pendente',
+      em_analise: 'Em Análise',
+      devolvido: 'Devolvido',
+      aprovado: 'Aprovado',
+    }[status] ?? 'Pendente';
     unidade.preenchimento = preenchimento;
     unidade.nota = null;
+    unidade.parecerCam = registro?.parecer_cam ?? null;
+    unidade.revisadoPor = registro?.revisado_por_nome ?? null;
+    unidade.revisadoEm = registro?.revisado_em ?? null;
     lancamentos[unidade.id] = campos;
     justificativas[unidade.id] = registro ? JSON.parse(registro.justificativas) : {};
-    if (registro?.enviado) enviadas[unidade.id] = true;
+    if (status !== 'pendente') enviadas[unidade.id] = true;
   }
 
   const users = usuario.perfil === 'cam'
@@ -535,12 +567,68 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
 
       if (req.method === 'GET' && url.pathname === '/api/state') return enviar(res, 200, carregarEstado(db, usuario));
 
+      const revisaoMatch = url.pathname.match(/^\/api\/unidades\/(\d+)\/review$/);
+      if (revisaoMatch) {
+        if (req.method !== 'POST') return enviar(res, 405, { error: 'Método não permitido.' });
+        if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode revisar lançamentos.' });
+        const unidadeId = Number(revisaoMatch[1]);
+        const unidade = db.prepare('SELECT id FROM unidades WHERE id = ?').get(unidadeId);
+        if (!unidade) return enviar(res, 404, { error: 'Unidade não encontrada.' });
+
+        const body = await lerJson(req);
+        if (!ehObjeto(body) || !['approve', 'return'].includes(body.decisao)) {
+          return enviar(res, 400, { error: 'Escolha aprovar ou devolver o lançamento.' });
+        }
+        const parecer = body.decisao === 'return' && typeof body.parecer === 'string' ? body.parecer.trim() : '';
+        if (body.decisao === 'return' && (parecer.length < 20 || parecer.length > 1000)) {
+          return enviar(res, 400, { error: 'Informe um parecer de pelo menos 20 caracteres para devolver o lançamento.' });
+        }
+
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          const atual = db.prepare('SELECT status, atualizado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+          if (!atual || atual.status !== 'em_analise') {
+            throw Object.assign(new Error('Somente lançamentos em análise podem ser revisados.'), { status: 409 });
+          }
+          const agora = new Date().toISOString();
+          const status = body.decisao === 'approve' ? 'aprovado' : 'devolvido';
+          const atualizacao = db.prepare(`
+            UPDATE lancamentos
+            SET status = ?, enviado = 1, parecer_cam = ?, revisado_por = ?, revisado_em = ?, atualizado_em = ?
+            WHERE unidade_id = ? AND status = 'em_analise'
+          `).run(status, body.decisao === 'return' ? parecer : null, usuario.id, agora, agora, unidadeId);
+          if (atualizacao.changes !== 1) {
+            throw Object.assign(new Error('O lançamento já foi revisado por outra solicitação.'), { status: 409 });
+          }
+          if (body.decisao === 'approve') {
+            db.prepare('UPDATE historico SET aprovado = 1 WHERE unidade_id = ? AND submetido_em = ?')
+              .run(unidadeId, atual.atualizado_em);
+          } else {
+            db.prepare('DELETE FROM historico WHERE unidade_id = ? AND submetido_em = ? AND aprovado = 0')
+              .run(unidadeId, atual.atualizado_em);
+          }
+          registrarAuditoria(db, usuario.id, `lancamento_${status}`, { unidadeId });
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        return enviar(res, 200, carregarEstado(db, usuario));
+      }
+
       const unidadeMatch = url.pathname.match(/^\/api\/unidades\/(\d+)\/(analyze|draft|submit)$/);
       if (unidadeMatch) {
         const unidadeId = Number(unidadeMatch[1]);
         const unidade = db.prepare('SELECT id, nome, tipo, distrito_id AS distrito FROM unidades WHERE id = ?').get(unidadeId);
         if (!unidade || !usuarioPodeAcessarUnidade(usuario, unidade)) return enviar(res, 403, { error: 'Sem permissão para acessar esta unidade.' });
         if (req.method !== 'POST') return enviar(res, 405, { error: 'Método não permitido.' });
+        if (unidadeMatch[2] !== 'analyze' && usuario.perfil === 'cam') {
+          return enviar(res, 403, { error: 'A CAM revisa lançamentos, mas não pode editar ou submeter dados da unidade.' });
+        }
+        const statusAtual = db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId)?.status ?? 'pendente';
+        if (unidadeMatch[2] !== 'analyze' && ['em_analise', 'aprovado'].includes(statusAtual)) {
+          return enviar(res, 409, { error: 'O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.' });
+        }
         const body = await lerJson(req);
         if (!ehObjeto(body) || !ehObjeto(body.campos)) return enviar(res, 400, { error: 'O corpo deve conter campos de lançamento válidos.' });
         const camposErro = validarCampos(body.campos);
@@ -556,20 +644,42 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         const historico = db.prepare(`
           SELECT sub_id AS subId, valor FROM (
             SELECT sub_id, valor, id, ROW_NUMBER() OVER (PARTITION BY sub_id ORDER BY id DESC) AS ordem
-            FROM historico WHERE unidade_id = ?
+            FROM historico WHERE unidade_id = ? AND aprovado = 1
           ) WHERE ordem <= 50 ORDER BY id
         `).all(unidadeId);
         const analise = analisarCampos(indicadores, body.campos, historico);
         if (unidadeMatch[2] === 'analyze') return enviar(res, 200, analise);
 
         if (unidadeMatch[2] === 'draft') {
-          db.prepare(`
-            INSERT INTO lancamentos (unidade_id, campos, justificativas, enviado, atualizado_em)
-            VALUES (?, ?, ?, 0, ?)
-            ON CONFLICT(unidade_id) DO UPDATE SET campos = excluded.campos,
-              justificativas = excluded.justificativas, enviado = 0, atualizado_em = excluded.atualizado_em
-          `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), new Date().toISOString());
-          registrarAuditoria(db, usuario.id, 'rascunho_salvo', { unidadeId, modelo: analise.modelo });
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            const atual = db.prepare('SELECT status, parecer_cam, revisado_por, revisado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+            if (atual && ['em_analise', 'aprovado'].includes(atual.status)) {
+              throw Object.assign(new Error('O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.'), { status: 409 });
+            }
+            const statusRascunho = atual?.status === 'devolvido' ? 'devolvido' : 'pendente';
+            const devolvido = statusRascunho === 'devolvido';
+            const agora = new Date().toISOString();
+            db.prepare(`
+              INSERT INTO lancamentos (
+                unidade_id, campos, justificativas, enviado, status, parecer_cam, revisado_por, revisado_em, atualizado_em
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(unidade_id) DO UPDATE SET
+                campos = excluded.campos, justificativas = excluded.justificativas,
+                enviado = excluded.enviado, status = excluded.status, parecer_cam = excluded.parecer_cam,
+                revisado_por = excluded.revisado_por, revisado_em = excluded.revisado_em,
+                atualizado_em = excluded.atualizado_em
+            `).run(
+              unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), devolvido ? 1 : 0,
+              statusRascunho, devolvido ? atual.parecer_cam : null, devolvido ? atual.revisado_por : null,
+              devolvido ? atual.revisado_em : null, agora,
+            );
+            registrarAuditoria(db, usuario.id, 'rascunho_salvo', { unidadeId, modelo: analise.modelo });
+            db.exec('COMMIT');
+          } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+          }
           return enviar(res, 200, carregarEstado(db, usuario));
         }
 
@@ -590,11 +700,17 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         const agora = new Date().toISOString();
         db.exec('BEGIN IMMEDIATE');
         try {
+          const atual = db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+          if (atual && ['em_analise', 'aprovado'].includes(atual.status)) {
+            throw Object.assign(new Error('O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.'), { status: 409 });
+          }
           db.prepare(`
-            INSERT INTO lancamentos (unidade_id, campos, justificativas, enviado, atualizado_em)
-            VALUES (?, ?, ?, 1, ?)
+            INSERT INTO lancamentos (
+              unidade_id, campos, justificativas, enviado, status, parecer_cam, revisado_por, revisado_em, atualizado_em
+            ) VALUES (?, ?, ?, 1, 'em_analise', NULL, NULL, NULL, ?)
             ON CONFLICT(unidade_id) DO UPDATE SET campos = excluded.campos,
-              justificativas = excluded.justificativas, enviado = 1, atualizado_em = excluded.atualizado_em
+              justificativas = excluded.justificativas, enviado = 1, status = 'em_analise',
+              parecer_cam = NULL, revisado_por = NULL, revisado_em = NULL, atualizado_em = excluded.atualizado_em
           `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), agora);
           const inserirHistorico = db.prepare('INSERT INTO historico (unidade_id, sub_id, valor, submetido_em) VALUES (?, ?, ?, ?)');
           for (const sub of requeridos) {

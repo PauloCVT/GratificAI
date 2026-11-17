@@ -28,6 +28,8 @@ A senha deve conter pelo menos 12 caracteres, maiúsculas, minúsculas e número
 
 O Vite serve a interface em `http://localhost:5173` e encaminha `/api` para o backend em `http://127.0.0.1:3001`. Os dados ficam em `mvp/data/gratificai.sqlite`, ignorada pelo Git. `DATABASE_PATH`, `API_PORT` e `API_HOST` permitem configurar a execução. O backend fica limitado a loopback por padrão.
 
+Para hospedagem pública, não use `npm run dev`. Gere a interface com `npm run build`, configure `NODE_ENV=production`, `APP_ORIGIN` como a origem HTTPS pública e `DATABASE_PATH` como caminho absoluto em volume persistente. O servidor recusa iniciar em produção sem essas configurações de origem/caminho. Use `npm start` para iniciar a API; sirva `dist/` no mesmo domínio por um proxy TLS confiável, encaminhe `/api` à API e mantenha a porta da API privada. A hospedagem deve oferecer uma única instância para o SQLite e aplicar a política institucional de backup, retenção e criptografia. Não publique até configurar e testar esses controles no provedor escolhido.
+
 ## Banco e limpeza dos dados anteriores
 
 SQLite mantém tabelas relacionais para distritos, unidades, usuários, sessões, portarias, lançamentos, histórico estatístico e auditoria, com chaves estrangeiras, índices e restrições. A primeira migração substitui o esquema antigo do protótipo e remove lançamentos, usuários simulados e estatísticas de demonstração. Somente os códigos oficiais dos oito distritos e as duas portarias normativas padrão são inicializados; novas unidades e usuários devem ser cadastrados pela CAM.
@@ -47,9 +49,13 @@ Consulte [SEGURANCA.md](./SEGURANCA.md) para o inventário e classificação pre
 
 Para produção, configure TLS num proxy reverso confiável, defina `APP_ORIGIN` para a origem HTTPS pública e `NODE_ENV=production`; o cookie passa a exigir HTTPS. Proteja o arquivo do banco e suas cópias com permissões do sistema operativo, backups cifrados e controles operacionais. SQLite é adequado ao MVP em instância única; para vários servidores ou alta concorrência, use um banco gerenciado e um mecanismo compartilhado de sessões/rate limit. Integre SSO institucional antes de uso oficial e valide retenção, acesso e auditoria com a equipe de segurança e LGPD.
 
+## Fluxo de submissão e revisão da CAM
+
+Somente a conta vinculada à unidade preenche e submete seus indicadores. Após o envio, o lançamento passa para **Em Análise** e fica bloqueado para edição enquanto aguarda a CAM. No painel geral, a CAM pode revisar os indicadores e justificativas, então **aprovar** ou **devolver para ajustes** com parecer obrigatório de 20 a 1000 caracteres. Lançamentos devolvidos podem ser corrigidos e reenviados; o parecer permanece visível na tela de lançamento até a nova submissão. Após aprovado, o lançamento fica somente para leitura. Os status e o parecer são persistidos no SQLite e retornados no estado da API, inclusive após reiniciar o serviço. Apenas dados aprovados entram no histórico usado pelo Isolation Forest; tentativas devolvidas não contaminam o treinamento.
+
 ## Validação inteligente
 
-A validação combina regras determinísticas e detecção estatística adaptativa. Compara a entrada à mediana e ao desvio absoluto mediano das últimas 50 submissões da mesma unidade e indicador, após pelo menos três observações. Valores impossíveis bloqueiam a submissão; discrepâncias podem ser justificadas e são registradas. O detector não altera números e não garante a veracidade dos dados de origem.
+A validação combina regras determinísticas com um Isolation Forest não supervisionado. Em cada análise, ajusta 100 árvores com até 32 amostras das últimas 50 submissões da mesma unidade e subindicador; só pontua anomalias com pelo menos 12 observações históricas. O índice de anomalia a partir de 0,65 gera um alerta para revisão, não uma probabilidade nem confirmação de erro. Valores matematicamente inválidos continuam bloqueados pelas regras; alertas podem ser justificados. O modelo não altera números e não garante a veracidade dos dados.
 
 ## Comandos
 
@@ -59,4 +65,4 @@ npm test
 npm run build
 ```
 
-Rotas principais: `GET /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/password`, `GET /api/state`, operações de lançamento em `/api/unidades`, cadastro CAM em `/api/usuarios`, e parametrização em `/api/portarias`.
+Rotas principais: `GET /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/password`, `GET /api/state`, operações de lançamento em `/api/unidades`, incluindo `POST /api/unidades/:id/review` (exclusiva da CAM), cadastro CAM em `/api/usuarios`, e parametrização em `/api/portarias`.

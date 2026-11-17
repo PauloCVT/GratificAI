@@ -28,7 +28,7 @@ export function LoginScreen({ onLogin }: { onLogin: (email: string, senha: strin
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 p-5">
+    <main className="flex min-h-dvh items-center justify-center bg-slate-100 p-5">
       <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-lg">
         <div className="mb-6 flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#0f172a] text-lg font-bold text-white">S</div>
@@ -98,7 +98,7 @@ export function TrocaSenhaObrigatoria({ onChanged }: { onChanged: (user: Usuario
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 p-5">
+    <main className="flex min-h-dvh items-center justify-center bg-slate-100 p-5">
       <form onSubmit={salvar} className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-7 shadow-lg">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Primeiro acesso</p>

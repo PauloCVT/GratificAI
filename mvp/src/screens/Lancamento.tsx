@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Campos, PROFILES, Pesos, Profile, Unidade, chaveMatriz, indicadoresDaUnidade, pctDe, progressoDe, tipoParaPerfil, unidadesVisiveis,
+  Campos, PROFILES, Pesos, Profile, Unidade, chaveMatriz, indicadoresDaUnidade, pctDe, progressoDe, tipoParaPerfil,
 } from '../domain';
 import { analisarLancamento, portariaVigente, salvarLancamento, submeter, useStore } from '../store';
 import { ApiError } from '../api';
@@ -11,7 +11,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   const st = useStore();
   const portaria = portariaVigente(st);
   const p = PROFILES[profile];
-  const visiveis = unidadesVisiveis(profile, st.unidades);
+  const visiveis = st.unidades;
 
   const salvo = st.lancamentos[unidade.id] ?? {};
   const [campos, setCampos] = useState<Campos>(salvo);
@@ -27,7 +27,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   const ativos = indicadores.filter(i => i.ativo);
   const { total: totalSubs, preenchidos: filledSubs, pct: progPct } = progressoDe(indicadores, campos);
   const pronto = totalSubs > 0 && filledSubs === totalSubs;
-  const enviada = !!st.enviadas[unidade.id];
+  const somenteLeitura = profile === 'cam' || ['Em Análise', 'Aprovado'].includes(unidade.status);
   const pesos = portaria.pesos;
 
   useEffect(() => {
@@ -85,14 +85,34 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
     <div className="p-5 space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-bold text-slate-900" style={{ fontFamily: 'DM Sans,sans-serif' }}>Lançamento de Indicadores</h1>
+          <h1 className="text-xl font-bold text-slate-900">Lançamento de Indicadores</h1>
           <p className="text-xs text-slate-500 mt-0.5">Perfil: {p.label} · Ciclo 3º Quad. 2024 · Entrada via Numerador / Denominador</p>
         </div>
         <div className="flex items-center gap-2">
-          {enviada && <span className="text-[10px] font-semibold px-2.5 py-1.5 bg-blue-100 text-blue-700 border border-blue-200 rounded-lg">Submetido · Em Análise</span>}
-          <button onClick={salvar} className="px-4 py-2 bg-[#0f172a] text-white text-xs font-semibold rounded-lg hover:bg-[#1e3a8a] transition-colors cursor-pointer">Salvar Rascunho</button>
+          {unidade.status !== 'Pendente' && (
+            <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-semibold text-slate-700">{unidade.status}</span>
+          )}
+          {!somenteLeitura && <button onClick={salvar} className="px-4 py-2 bg-[#0f172a] text-white text-xs font-semibold rounded-lg hover:bg-[#1e3a8a] transition-colors cursor-pointer">Salvar Rascunho</button>}
         </div>
       </div>
+
+      {unidade.status === 'Devolvido' && unidade.parecerCam && (
+        <div role="status" className="rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-xs text-orange-950">
+          <p className="font-bold">Lançamento devolvido pela CAM</p>
+          <p className="mt-1 whitespace-pre-wrap">{unidade.parecerCam}</p>
+          {unidade.revisadoPor && <p className="mt-1 text-[10px] text-orange-800">Parecer de {unidade.revisadoPor}{unidade.revisadoEm ? ` · ${new Date(unidade.revisadoEm).toLocaleString('pt-BR')}` : ''}</p>}
+        </div>
+      )}
+      {unidade.status === 'Em Análise' && <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-900">Lançamento submetido e aguardando avaliação da CAM.</p>}
+      {unidade.status === 'Aprovado' && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-900">Lançamento aprovado pela CAM. Os dados estão bloqueados para edição.</p>}
+      {profile === 'cam' && unidade.status === 'Pendente' && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-950">
+          Este lançamento ainda não foi enviado pela unidade. A conta vinculada à unidade deve preencher os indicadores e clicar em “Submeter para CAM”; depois disso, ele aparecerá no painel como “Em Análise” com a opção “Revisar”.
+        </p>
+      )}
+      {profile === 'cam' && unidade.status === 'Em Análise' && (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-700">Volte ao painel geral e clique em “Revisar” para aprovar ou devolver este lançamento.</p>
+      )}
 
       <div className="flex items-center gap-3 bg-white border border-slate-200 rounded-xl px-5 py-3 flex-wrap">
         <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wide">Unidade de Saúde</p>
@@ -105,6 +125,10 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
           <p className="text-xs font-semibold text-slate-800">{unidade.nome} <span className="font-mono text-slate-400">· {unidade.tipo} · {unidade.distrito}</span></p>
         )}
         <span className="text-[10px] text-slate-400 ml-auto">Portaria vigente: {portaria.nome}</span>
+      </div>
+
+      <div role="note" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[11px] leading-relaxed text-amber-900">
+        Informe somente resultados agregados. Não inclua nomes, documentos, prontuários ou outros dados que identifiquem pacientes ou profissionais nas justificativas.
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 px-5 py-3">
@@ -160,13 +184,13 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
                         <div className="flex items-center gap-2 shrink-0">
                           <div className="text-center">
                             <p className="text-[9px] text-slate-400 mb-0.5">Numerador (n)</p>
-                            <input type="number" min={0} placeholder="0" value={c?.n ?? ''} onChange={e => setCampo(sub.id, 'n', e.target.value)}
+                            <input type="number" min={0} placeholder="0" value={c?.n ?? ''} disabled={somenteLeitura} onChange={e => setCampo(sub.id, 'n', e.target.value)}
                               className="w-24 text-center text-xs font-mono font-semibold px-2 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-300 transition-all" />
                           </div>
                           <span className="text-slate-400 text-lg mt-4">/</span>
                           <div className="text-center">
                             <p className="text-[9px] text-slate-400 mb-0.5">Denominador (d)</p>
-                            <input type="number" min={0} placeholder="0" value={c?.d ?? ''} onChange={e => setCampo(sub.id, 'd', e.target.value)}
+                            <input type="number" min={0} placeholder="0" value={c?.d ?? ''} disabled={somenteLeitura} onChange={e => setCampo(sub.id, 'd', e.target.value)}
                               className="w-24 text-center text-xs font-mono font-semibold px-2 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-300 transition-all" />
                           </div>
                           <div className="text-center">
@@ -186,7 +210,11 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
                       {resultados[sub.id] && (
                         <div className={`mt-3 rounded-lg border px-3 py-2 text-[10px] ${resultados[sub.id].severidade === 'invalid' ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
                           <p className="font-semibold">
-                            {resultados[sub.id].severidade === 'invalid' ? 'Valor inválido' : `Alerta de consistência · confiança ${Math.round(resultados[sub.id].score * 100)}%`}
+                            {resultados[sub.id].severidade === 'invalid'
+                              ? 'Valor inválido'
+                              : resultados[sub.id].origem === 'ml'
+                                ? `Isolation Forest · índice de anomalia ${Math.round(resultados[sub.id].score * 100)}%`
+                                : 'Alerta de regra · requer conferência'}
                           </p>
                           <p className="mt-0.5">{resultados[sub.id].mensagem}</p>
                           {resultados[sub.id].observacoesHistoricas > 0 && (
@@ -196,6 +224,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
                             <label className="mt-2 block font-semibold">
                               Justificativa técnica obrigatória (mínimo 20 caracteres)
                               <textarea value={justificativas[sub.id] ?? ''} maxLength={1000}
+                                disabled={somenteLeitura}
                                 onChange={event => setJustificativas(prev => ({ ...prev, [sub.id]: event.target.value }))}
                                 rows={2} placeholder="Descreva a origem do dado e o motivo da divergência."
                                 className="mt-1 w-full resize-y rounded-md border border-amber-300 bg-white px-2 py-1.5 font-normal text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-300" />
@@ -213,20 +242,21 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
 
         <div className="flex items-center justify-between px-5 py-3.5 border-t border-slate-100 bg-slate-50 gap-3 flex-wrap">
           <p className="text-[11px]">
-            {aviso ? <span className="text-slate-600 font-semibold">{aviso}</span>
+            {somenteLeitura ? <span className="text-slate-600 font-semibold">Visualização somente leitura.</span>
+              : aviso ? <span className="text-slate-600 font-semibold">{aviso}</span>
               : erroAnalise ? <span className="text-rose-700 font-semibold">{erroAnalise}</span>
               : analisando ? <span className="text-blue-700 font-semibold">Verificando consistência…</span>
               : temBloqueio ? <span className="text-rose-700 font-semibold">Corrija os valores inválidos e justifique os alertas para submeter.</span>
               : pronto ? <span className="text-emerald-600 font-semibold">✓ Formulário pronto para submissão</span>
               : <span className="text-amber-600 font-semibold">Preencha todos os subindicadores para submeter.</span>}
           </p>
-          <div className="flex items-center gap-2">
+          {!somenteLeitura && <div className="flex items-center gap-2">
             <button onClick={() => { setCampos(salvo); setJustificativas(st.justificativas[unidade.id] ?? {}); setAviso(''); }} className="px-3 py-2 border border-slate-300 text-slate-600 text-[11px] font-medium rounded-lg hover:bg-white cursor-pointer">Cancelar</button>
             <button disabled={!pronto || !analise || analisando || !!erroAnalise || temBloqueio} onClick={() => { void enviar(); }}
               className="px-4 py-2 bg-[#0f172a] text-white text-[11px] font-semibold rounded-lg hover:bg-[#1e3a8a] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors">
               Submeter para CAM
             </button>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

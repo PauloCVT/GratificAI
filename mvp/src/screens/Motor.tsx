@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { CARGO_LABELS, MATRIZ_KEYS, Pesos, Portaria, Profile, Regras, pesosValidos, regrasValidas, somaPesos } from '../domain';
+import { CARGO_LABELS, MATRIZ_KEYS, Pesos, Portaria, Regras, pesosValidos, regrasValidas, somaPesos } from '../domain';
 import { criarPortaria, definirVigente, portariaVigente, publicarPortaria, useStore } from '../store';
 import { formatBRL } from '../components/ui';
 
 const MACROS = ['Ind 1\nHórus', 'Ind 2\nGestão', 'Ind 3\nASU', 'Ind 4\nUS', 'Ind 5\nVigilância'];
 
-export function MotorScreen({ profile }: { profile: Profile }) {
+export function MotorScreen() {
   const st = useStore();
   const vigente = portariaVigente(st);
   const [novaAberta, setNovaAberta] = useState(false);
@@ -27,8 +27,8 @@ export function MotorScreen({ profile }: { profile: Profile }) {
     <div className="p-5 space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-bold text-slate-900" style={{ fontFamily: 'DM Sans,sans-serif' }}>Motor de Regras & Parametrização CAM</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Gestão de versões normativas, prazos e ponderação matricial · Acesso restrito CAM</p>
+          <h1 className="text-xl font-bold text-slate-900">Motor de regras e parametrização</h1>
+          <p className="text-xs text-slate-500 mt-0.5">Gestão de versões normativas, prazos e ponderação matricial.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <label className="text-[10px] text-slate-500 font-medium">Versão Normativa:</label>
@@ -38,20 +38,16 @@ export function MotorScreen({ profile }: { profile: Profile }) {
           </select>
           <button onClick={() => setNovaAberta(true)} className="text-[11px] px-3 py-1.5 bg-[#0f172a] text-white rounded-lg hover:bg-[#1e3a8a] font-medium cursor-pointer transition-colors">+ Nova Portaria</button>
           <span className="text-[9px] font-semibold px-2 py-1 bg-amber-100 text-amber-700 border border-amber-200 rounded-full">Prazo Hórus: {vigente.regras.prazoHorusDias} dias úteis</span>
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 border border-rose-200 rounded-lg">
-            <span className="w-1.5 h-1.5 bg-rose-500 rounded-full" />
-            <span className="text-[10px] text-rose-700 font-semibold">Modo Administrador</span>
-          </div>
         </div>
       </div>
 
       {aviso && <p role="status" className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-medium text-blue-800">{aviso}</p>}
-      <Editor key={vigente.id} profile={profile} portaria={vigente} />
+      <Editor key={vigente.id} portaria={vigente} />
 
       {novaAberta && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setNovaAberta(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-            <p className="font-bold text-slate-900 text-sm mb-1" style={{ fontFamily: 'DM Sans,sans-serif' }}>Nova Portaria</p>
+            <p className="font-bold text-slate-900 text-sm mb-1">Nova portaria</p>
             <p className="text-[10px] text-slate-500 mb-4">Cria uma nova versão normativa a partir dos pesos e regras da versão vigente. Depois, ajuste e publique.</p>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">Nome da versão <span className="text-rose-500">*</span></label>
             <input autoFocus value={nomeNova} onChange={e => setNomeNova(e.target.value)} placeholder="Ex.: Portaria Conjunta SESAU/SEPLAGTD nº 05/2025"
@@ -67,7 +63,7 @@ export function MotorScreen({ profile }: { profile: Profile }) {
   );
 }
 
-function Editor({ profile, portaria }: { profile: Profile; portaria: Portaria }) {
+function Editor({ portaria }: { portaria: Portaria }) {
   const [tab, setTab] = useState<'matriz' | 'formula'>('matriz');
   const [pesos, setPesos] = useState<Pesos>(() => structuredClone(portaria.pesos));
   const [regras, setRegras] = useState<Regras>({ ...portaria.regras });

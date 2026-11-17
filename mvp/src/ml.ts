@@ -5,6 +5,7 @@ export type SeveridadeValidacao = 'invalid' | 'warning';
 
 export interface ResultadoCampo {
   severidade: SeveridadeValidacao;
+  origem: 'regra' | 'ml';
   mensagem: string;
   score: number;
   precisaJustificativa: boolean;
@@ -21,16 +22,94 @@ interface ObservacaoHistorica {
   valor: number;
 }
 
-const MODELO = 'detector-robusto-v1';
+const MODELO = 'isolation-forest-univariado-v1';
 const METRICAS_MEDIA = new Set(['4.M2', '4.M3']);
+const MINIMO_HISTORICO_ML = 12;
+const MAX_AMOSTRA_ARVORE = 32;
+const QUANTIDADE_ARVORES = 100;
+const LIMIAR_ANOMALIA = 0.65;
 
-const mediana = (valores: number[]) => {
-  const ordenados = [...valores].sort((a, b) => a - b);
-  const meio = Math.floor(ordenados.length / 2);
-  return ordenados.length % 2
-    ? ordenados[meio]
-    : (ordenados[meio - 1] + ordenados[meio]) / 2;
-};
+interface NoIsolamento {
+  tamanho: number;
+  corte?: number;
+  esquerda?: NoIsolamento;
+  direita?: NoIsolamento;
+}
+
+function criarGerador(semente: number): () => number {
+  let estado = semente || 0x6d2b79f5;
+  return () => {
+    estado = (Math.imul(estado, 1664525) + 1013904223) >>> 0;
+    return estado / 0x100000000;
+  };
+}
+
+function sementeDoHistorico(id: string, valores: number[]): number {
+  let hash = 2166136261;
+  for (const caractere of `${id}:${valores.join(',')}`) {
+    hash = Math.imul(hash ^ caractere.charCodeAt(0), 16777619);
+  }
+  return hash >>> 0;
+}
+
+function comprimentoMedio(tamanho: number): number {
+  if (tamanho <= 1) return 0;
+  if (tamanho === 2) return 1;
+  const constanteEuler = 0.5772156649;
+  return 2 * (Math.log(tamanho - 1) + constanteEuler) - (2 * (tamanho - 1)) / tamanho;
+}
+
+function construirArvore(valores: number[], profundidade: number, profundidadeMaxima: number, aleatorio: () => number): NoIsolamento {
+  const minimo = Math.min(...valores);
+  const maximo = Math.max(...valores);
+  if (profundidade >= profundidadeMaxima || valores.length <= 1 || minimo === maximo) {
+    return { tamanho: valores.length };
+  }
+
+  const corte = minimo + aleatorio() * (maximo - minimo);
+  const esquerda = valores.filter(valor => valor < corte);
+  const direita = valores.filter(valor => valor >= corte);
+  if (!esquerda.length || !direita.length) return { tamanho: valores.length };
+
+  return {
+    tamanho: valores.length,
+    corte,
+    esquerda: construirArvore(esquerda, profundidade + 1, profundidadeMaxima, aleatorio),
+    direita: construirArvore(direita, profundidade + 1, profundidadeMaxima, aleatorio),
+  };
+}
+
+function caminhoNaArvore(arvore: NoIsolamento, valor: number, profundidade = 0): number {
+  if (arvore.corte === undefined || !arvore.esquerda || !arvore.direita) {
+    return profundidade + comprimentoMedio(arvore.tamanho);
+  }
+  return valor < arvore.corte
+    ? caminhoNaArvore(arvore.esquerda, valor, profundidade + 1)
+    : caminhoNaArvore(arvore.direita, valor, profundidade + 1);
+}
+
+function pontuarIsolationForest(valores: number[], observado: number, id: string): number {
+  const minimo = Math.min(...valores);
+  const maximo = Math.max(...valores);
+  if (minimo === maximo) return observado === minimo ? 0.5 : 1;
+
+  const tamanhoAmostra = Math.min(MAX_AMOSTRA_ARVORE, valores.length);
+  const profundidadeMaxima = Math.ceil(Math.log2(tamanhoAmostra));
+  const aleatorio = criarGerador(sementeDoHistorico(id, valores));
+  const arvores: NoIsolamento[] = [];
+
+  for (let indice = 0; indice < QUANTIDADE_ARVORES; indice++) {
+    const embaralhados = [...valores];
+    for (let i = embaralhados.length - 1; i > 0; i--) {
+      const j = Math.floor(aleatorio() * (i + 1));
+      [embaralhados[i], embaralhados[j]] = [embaralhados[j], embaralhados[i]];
+    }
+    arvores.push(construirArvore(embaralhados.slice(0, tamanhoAmostra), 0, profundidadeMaxima, aleatorio));
+  }
+
+  const caminhoMedio = arvores.reduce((total, arvore) => total + caminhoNaArvore(arvore, observado), 0) / arvores.length;
+  return 2 ** (-caminhoMedio / comprimentoMedio(tamanhoAmostra));
+}
 
 function valorNumerico(valor: string): number | null {
   if (!valor.trim()) return null;
@@ -41,11 +120,16 @@ function valorNumerico(valor: string): number | null {
 }
 
 function invalid(mensagem: string): ResultadoCampo {
-  return { severidade: 'invalid', mensagem, score: 1, precisaJustificativa: false, observacoesHistoricas: 0 };
+  return { severidade: 'invalid', origem: 'regra', mensagem, score: 1, precisaJustificativa: false, observacoesHistoricas: 0 };
 }
 
-function warning(mensagem: string, score = 0.75, observacoesHistoricas = 0): ResultadoCampo {
-  return { severidade: 'warning', mensagem, score, precisaJustificativa: true, observacoesHistoricas };
+function warning(
+  mensagem: string,
+  score = 0.75,
+  observacoesHistoricas = 0,
+  origem: ResultadoCampo['origem'] = 'regra',
+): ResultadoCampo {
+  return { severidade: 'warning', origem, mensagem, score, precisaJustificativa: true, observacoesHistoricas };
 }
 
 function analisarSubindicador(
@@ -77,23 +161,15 @@ function analisarSubindicador(
   }
 
   const observacoes = historico.filter(item => item.subId === sub.id).map(item => item.valor);
-  const minimoHistorico = 3;
-  if (observacoes.length < minimoHistorico) return undefined;
-
-  const centro = mediana(observacoes);
-  const desvios = observacoes.map(valor => Math.abs(valor - centro));
-  const mad = mediana(desvios);
+  if (observacoes.length < MINIMO_HISTORICO_ML) return undefined;
   const observado = METRICAS_MEDIA.has(sub.id) ? n / d : (pctDe(campo) ?? 0);
-  const limite = Math.max(3.5 * 1.4826 * mad, METRICAS_MEDIA.has(sub.id) ? Math.max(Math.abs(centro) * 0.25, 1) : 15);
-  const distancia = Math.abs(observado - centro);
-
-  if (distancia <= limite) return undefined;
-
-  const score = Math.min(0.99, Math.max(0.75, distancia / (limite * 2)));
+  const score = pontuarIsolationForest(observacoes, observado, sub.id);
+  if (score < LIMIAR_ANOMALIA) return undefined;
   return warning(
-    `Valor discrepante do histórico desta unidade (mediana ${centro.toFixed(1)}; informado ${observado.toFixed(1)}). Confirme ou justifique.`,
+    `O Isolation Forest identificou um valor atípico em relação ao histórico desta unidade (informado ${observado.toFixed(1)}). Confirme ou justifique.`,
     score,
     observacoes.length,
+    'ml',
   );
 }
 

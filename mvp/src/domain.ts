@@ -1,8 +1,7 @@
 // ─── Tipos ─────────────────────────────────────────────────────────────────────
 export type Profile = 'cam' | 'gg' | 'sna' | 'snb1' | 'snb2' | 'usf' | 'caps' | 'cecon' | 'mac';
 export type Screen = 'dashboard' | 'indicadores' | 'motor' | 'administracao';
-export type StatusEnvio = 'Pendente' | 'Em Análise' | 'Aprovado' | 'Bloqueado';
-export type Classificacao = 'Insuficiente' | 'Regular' | 'Satisfatório' | 'Excelente';
+export type StatusEnvio = 'Pendente' | 'Em Análise' | 'Devolvido' | 'Aprovado';
 
 // ─── Perfis (RBAC) ─────────────────────────────────────────────────────────────
 // distrito  → gestor distrital: só enxerga/edita unidades do seu distrito
@@ -39,39 +38,13 @@ export const DS_COLORS: Record<string, string> = {
   'DS V':'#d97706','DS VI':'#0891b2','DS VII':'#65a30d','DS VIII':'#9f1239',
 };
 
-export function classificar(n: number): Classificacao {
-  if (n >= 80) return 'Excelente';
-  if (n >= 70) return 'Satisfatório';
-  if (n >= 60) return 'Regular';
-  return 'Insuficiente';
+export interface Unidade {
+  id: number; nome: string; tipo: string; distrito: string; status: StatusEnvio; preenchimento: number; nota: number | null;
+  parecerCam?: string | null; revisadoPor?: string | null; revisadoEm?: string | null;
 }
-export const CLASS_COLOR: Record<Classificacao, string> = {
-  Excelente: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  Satisfatório: 'bg-blue-100 text-blue-700 border-blue-200',
-  Regular: 'bg-amber-100 text-amber-700 border-amber-200',
-  Insuficiente: 'bg-rose-100 text-rose-700 border-rose-200',
-};
-
-export interface Unidade { id: number; nome: string; tipo: string; distrito: string; status: StatusEnvio; preenchimento: number; nota: number | null; }
 export const TIPOS_UNIDADE = ['USF', 'UBT', 'UBT MISTA', 'CAPS', 'CECON', 'CECO', 'UCIS', 'MAC', 'SAE', 'NDI'] as const;
 
 // ─── RBAC ─────────────────────────────────────────────────────────────────────
-export function unidadesVisiveis(_profile: Profile, todas: Unidade[] = []): Unidade[] {
-  return todas;
-}
-
-export function distritosVisiveis(profile: Profile, unidades: Unidade[] = []): Distrito[] {
-  if (profile === 'cam') return DISTRITOS;
-  const ids = new Set(unidades.map(u => u.distrito));
-  return DISTRITOS.filter(d => ids.has(d.id));
-}
-
-export const podeParametrizar = (profile: Profile) => profile === 'cam';
-
-export const jurisdicao = (profile: Profile) => {
-  return PROFILES[profile].nivel === 'Global' ? 'Rede completa' : PROFILES[profile].nivel;
-};
-
 // ─── Matriz de pesos e regras da portaria ────────────────────────────────────
 export const MATRIZ_KEYS = ['usf','cecon','mac','gg','sna','snb1','snb2'] as const;
 export type MatrizKey = typeof MATRIZ_KEYS[number];
@@ -187,10 +160,5 @@ export function progressoDe(macros: MacroInd[], campos: Campos) {
   return { total: subs.length, preenchidos, pct: subs.length ? Math.round((preenchidos / subs.length) * 100) : 0 };
 }
 
-// Sem digitação própria, vale o valor de referência do protótipo.
-export function preenchimentoEfetivo(u: Unidade, campos: Campos | undefined, pesos: Pesos): number {
-  if (!campos) return u.preenchimento;
-  return progressoDe(indicadoresDaUnidade(u, pesos), campos).pct;
-}
-
-export const statusEfetivo = (u: Unidade, enviada: boolean): StatusEnvio => (enviada ? 'Em Análise' : u.status);
+export const statusEfetivo = (u: Unidade, enviada: boolean): StatusEnvio =>
+  u.status === 'Pendente' && enviada ? 'Em Análise' : u.status;

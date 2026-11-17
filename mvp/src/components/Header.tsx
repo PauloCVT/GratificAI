@@ -3,7 +3,7 @@ import { PROFILES } from '../domain';
 import { trocarSenha } from '../store';
 import type { Usuario } from '../api';
 
-export function Header({ user, onLogout }: { user: Usuario; onLogout: () => void }) {
+export function Header({ user, onLogout, onMenu, menuOpen }: { user: Usuario; onLogout: () => void; onMenu: () => void; menuOpen: boolean }) {
   const [senhaAtual, setSenhaAtual] = useState('');
   const [novaSenha, setNovaSenha] = useState('');
   const [mensagem, setMensagem] = useState('');
@@ -23,30 +23,30 @@ export function Header({ user, onLogout }: { user: Usuario; onLogout: () => void
   };
 
   return (
-    <header className="h-13 bg-white border-b border-slate-200 flex items-center justify-between px-5 shrink-0 sticky top-0 z-30">
+    <header className="relative z-30 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:px-6">
       <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[11px] text-slate-400 font-mono hidden sm:block">Prefeitura do Recife · SESAU</span>
-        <span className="text-slate-300 hidden sm:block">/</span>
-        <span className="text-[11px] text-slate-600 font-medium truncate">Gratificação Variável por Desempenho</span>
-      </div>
-      <div className="flex items-center gap-2.5">
-        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-full">
-          <svg width="10" height="10" viewBox="0 0 12 12"><path d="M6 1L2 2.5v3C2 8 4 10.5 6 11c2-.5 4-3 4-5.5v-3L6 1z" stroke="#64748b" strokeWidth="1.2"/></svg>
-          <span className="text-[9px] text-slate-500 font-mono">LGPD · Art. 5º II</span>
+        <button type="button" onClick={onMenu} aria-label="Abrir menu" aria-controls="main-navigation" aria-expanded={menuOpen} className="rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50 lg:hidden">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+        </button>
+        <div className="min-w-0">
+          <p className="hidden truncate text-xs font-medium text-slate-500 sm:block">Prefeitura do Recife · SESAU</p>
+          <p className="truncate text-sm font-semibold text-slate-800">Gratificação por desempenho</p>
         </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
-            <div className="w-6 h-6 rounded-md bg-[#0f172a] flex items-center justify-center">
-              <span className="text-white text-[9px] font-bold">{p.sigla.slice(0,3)}</span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-[#0f172a]">
+              <span className="text-[10px] font-bold text-white">{p.sigla.slice(0, 3)}</span>
             </div>
             <div className="text-left hidden sm:block">
-              <p className="text-[11px] font-semibold text-slate-800 leading-tight">{user.nome}</p>
-              <p className="text-[9px] text-slate-400 font-mono">{p.sigla} · {user.distrito ?? user.unidadeNome ?? 'Rede'}</p>
+              <p className="max-w-40 truncate text-xs font-semibold leading-tight text-slate-800">{user.nome}</p>
+              <p className="mt-0.5 text-[10px] text-slate-500">{p.sigla} · {user.distrito ?? user.unidadeNome ?? 'Rede'}</p>
             </div>
           </div>
-          <button onClick={() => { setAlterarSenha(!alterarSenha); setMensagem(''); }}
-            className="rounded-lg border border-slate-200 px-2.5 py-2 text-[10px] font-medium text-slate-600 hover:bg-slate-50">Senha</button>
-          <button onClick={onLogout} className="rounded-lg border border-slate-200 px-2.5 py-2 text-[10px] font-medium text-slate-600 hover:bg-slate-50">Sair</button>
+          <button type="button" onClick={() => { setAlterarSenha(!alterarSenha); setMensagem(''); }} aria-expanded={alterarSenha}
+            className="rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">Senha</button>
+          <button type="button" onClick={onLogout} className="rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50">Sair</button>
         </div>
       </div>
       {alterarSenha && (

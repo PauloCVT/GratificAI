@@ -204,23 +204,93 @@ describe('Autenticação e persistência GratificAI', () => {
     const user = await loginComSenhaPessoal('user@example.test', 'StrongUser2026!Pass');
     const campos = camposValidos(unidade);
     const justificativas = { '2.2': 'Conferência na folha confirmou que não houve abonos irregulares.' };
+    const inserirHistorico = db.prepare(`
+      INSERT INTO historico (unidade_id, sub_id, valor, submetido_em, aprovado)
+      VALUES (?, '4.1.1', 80, ?, 1)
+    `);
+    for (let observacao = 0; observacao < 11; observacao++) {
+      inserirHistorico.run(unidade.id, `2024-01-${String(observacao + 1).padStart(2, '0')}T00:00:00.000Z`);
+    }
     const enviado = await requisitar(`/api/unidades/${unidade.id}/submit`, { sessao: user, metodo: 'POST', corpo: { campos, justificativas } });
     expect(enviado.status).toBe(200);
     expect(enviado.body.enviadas[unidade.id]).toBe(true);
     const auditoriaLancamento = db.prepare("SELECT detalhes FROM auditoria WHERE acao = 'lancamento_submetido'").get();
     expect(auditoriaLancamento.detalhes).not.toContain(justificativas['2.2']);
+    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBe(11);
+    expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'approve' },
+    })).status).toBe(200);
+    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBeGreaterThan(11);
 
     const discrepantes = { ...campos, '4.1.1': { n: '1', d: '10' } };
-    for (let observacao = 0; observacao < 2; observacao++) {
-      expect((await requisitar(`/api/unidades/${unidade.id}/submit`, {
-        sessao: user, metodo: 'POST', corpo: { campos, justificativas },
-      })).status).toBe(200);
-    }
     const analise = await requisitar(`/api/unidades/${unidade.id}/analyze`, {
       sessao: user, metodo: 'POST', corpo: { campos: discrepantes },
     });
     expect(analise.status).toBe(200);
-    expect(analise.body.campos['4.1.1'].observacoesHistoricas).toBe(3);
+    expect(analise.body.campos['4.1.1'].origem).toBe('ml');
+    expect(analise.body.campos['4.1.1'].observacoesHistoricas).toBe(12);
+  });
+
+  it('permite à CAM devolver com parecer ou aprovar e reflete o fluxo no painel', async () => {
+    const unidade = await criarUnidade();
+    const conta = await criarConta({ unidadeId: unidade.id });
+    expect(conta.status).toBe(201);
+    const user = await loginComSenhaPessoal('user@example.test', 'StrongUser2026!Pass');
+    const campos = camposValidos(unidade);
+
+    const submetido = await requisitar(`/api/unidades/${unidade.id}/submit`, {
+      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+    });
+    expect(submetido.status).toBe(200);
+    expect(submetido.body.unidades.find(item => item.id === unidade.id).status).toBe('Em Análise');
+    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBe(0);
+
+    expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: user, metodo: 'POST', corpo: { decisao: 'approve' },
+    })).status).toBe(403);
+    expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'return', parecer: 'Curto demais.' },
+    })).status).toBe(400);
+
+    const parecer = 'Corrija o denominador e detalhe a origem do dado informado.';
+    const devolvido = await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'return', parecer },
+    });
+    expect(devolvido.status).toBe(200);
+    expect(devolvido.body.unidades.find(item => item.id === unidade.id)).toMatchObject({
+      status: 'Devolvido',
+      parecerCam: parecer,
+      revisadoPor: cam.user.nome,
+    });
+    expect(devolvido.body.enviadas[unidade.id]).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ?').get(unidade.id).total).toBe(0);
+
+    const rascunho = await requisitar(`/api/unidades/${unidade.id}/draft`, {
+      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+    });
+    expect(rascunho.status).toBe(200);
+    expect(rascunho.body.unidades.find(item => item.id === unidade.id).status).toBe('Devolvido');
+
+    const reenviado = await requisitar(`/api/unidades/${unidade.id}/submit`, {
+      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+    });
+    expect(reenviado.status).toBe(200);
+    expect(reenviado.body.unidades.find(item => item.id === unidade.id)).toMatchObject({
+      status: 'Em Análise',
+      parecerCam: null,
+    });
+
+    const aprovado = await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'approve' },
+    });
+    expect(aprovado.status).toBe(200);
+    expect(aprovado.body.unidades.find(item => item.id === unidade.id).status).toBe('Aprovado');
+    const historico = db.prepare('SELECT COUNT(*) AS total, SUM(aprovado) AS aprovados FROM historico WHERE unidade_id = ?').get(unidade.id);
+    expect(historico.total).toBeGreaterThan(0);
+    expect(historico.aprovados).toBe(historico.total);
+    expect((await requisitar(`/api/unidades/${unidade.id}/draft`, {
+      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+    })).status).toBe(409);
   });
 
   it('impede desativação da última conta CAM e fecha a sessão de usuários desativados', async () => {

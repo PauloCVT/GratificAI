@@ -75,6 +75,8 @@ export const salvarRascunhoApi = (unidadeId: number, campos: Campos, justificati
   requisitar<StateApi>(`/api/unidades/${unidadeId}/draft`, 'POST', { campos, justificativas });
 export const submeterLancamentoApi = (unidadeId: number, campos: Campos, justificativas: Record<string, string>) =>
   requisitar<StateApi>(`/api/unidades/${unidadeId}/submit`, 'POST', { campos, justificativas });
+export const revisarLancamentoApi = (unidadeId: number, decisao: 'approve' | 'return', parecer?: string) =>
+  requisitar<StateApi>(`/api/unidades/${unidadeId}/review`, 'POST', { decisao, parecer });
 export const criarPortariaApi = (nome: string) => requisitar<StateApi>('/api/portarias', 'POST', { nome });
 export const ativarPortariaApi = (id: string) =>
   requisitar<StateApi>(`/api/portarias/${encodeURIComponent(id)}/activate`, 'POST');

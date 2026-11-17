@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { Campos, Pesos, Profile, Regras, pesosValidos, regrasValidas } from './domain';
 import {
   ApiError, StateApi, alterarStatusUsuarioApi, analisarLancamentoApi, ativarPortariaApi, criarPortariaApi,
-  criarUnidadeApi, criarUsuarioApi, obterEstadoApi, publicarPortariaApi, salvarRascunhoApi,
+  criarUnidadeApi, criarUsuarioApi, obterEstadoApi, publicarPortariaApi, revisarLancamentoApi, salvarRascunhoApi,
   submeterLancamentoApi, trocarSenhaApi,
 } from './api';
 import { ResultadoAnalise } from './ml';
@@ -67,6 +67,10 @@ export async function salvarLancamento(unidadeId: number, campos: Campos, justif
 
 export async function submeter(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}): Promise<void> {
   incorporarApi(await submeterLancamentoApi(unidadeId, campos, justificativas));
+}
+
+export async function revisarLancamento(unidadeId: number, decisao: 'approve' | 'return', parecer?: string): Promise<void> {
+  incorporarApi(await revisarLancamentoApi(unidadeId, decisao, parecer));
 }
 
 export async function definirVigente(id: string): Promise<void> {

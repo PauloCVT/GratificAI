@@ -40,14 +40,24 @@ describe('Validação inteligente dos lançamentos', () => {
     expect(resultadoImpedeEnvio(resultado)).toBe(true);
   });
 
-  it('detecta discrepâncias em relação a três observações anteriores da unidade', () => {
+  it('sinaliza uma anomalia após treinar com 12 observações anteriores', () => {
     const campos: Campos = { '4.1.1': { n: '1', d: '10' } };
-    const historico = Array.from({ length: 3 }, () => ({ subId: '4.1.1', valor: 90 }));
+    const historico = Array.from({ length: 12 }, () => ({ subId: '4.1.1', valor: 90 }));
     const resultado = analisarCampos(indicadores, campos, historico).campos['4.1.1'];
     expect(resultado.severidade).toBe('warning');
-    expect(resultado.observacoesHistoricas).toBe(3);
+    expect(resultado.origem).toBe('ml');
+    expect(resultado.observacoesHistoricas).toBe(12);
     expect(resultadoImpedeEnvio(resultado)).toBe(true);
     expect(resultadoImpedeEnvio(resultado, 'Auditoria confirmou alteração na população elegível.')).toBe(false);
+  });
+
+  it('não sinaliza uma observação normal e aguarda histórico mínimo para o Isolation Forest', () => {
+    const campos: Campos = { '4.1.1': { n: '8', d: '10' } };
+    const historico = Array.from({ length: 12 }, () => ({ subId: '4.1.1', valor: 80 }));
+    expect(analisarCampos(indicadores, campos, historico).campos['4.1.1']).toBeUndefined();
+
+    const historicoInsuficiente = historico.slice(0, 3);
+    expect(analisarCampos(indicadores, { '4.1.1': { n: '1', d: '10' } }, historicoInsuficiente).campos['4.1.1']).toBeUndefined();
   });
 
   it('sinaliza ausência total de requisições e exige justificativa técnica', () => {

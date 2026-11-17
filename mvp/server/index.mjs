@@ -1,10 +1,31 @@
 import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { abrirBanco, criarServidorApi, provisionarCAMInicial } from './app.mjs';
 
+export function caminhoBancoConfigurado() {
+  const configurado = process.env.DATABASE_PATH;
+  if (process.env.NODE_ENV === 'production' && (!configurado || !isAbsolute(configurado))) {
+    throw new Error('Em produção, defina DATABASE_PATH como caminho absoluto em um volume persistente.');
+  }
+  return resolve(configurado ?? 'data/gratificai.sqlite');
+}
+
+function validarOrigemDeProducao() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const origem = process.env.APP_ORIGIN;
+  if (!origem) throw new Error('Defina APP_ORIGIN com a origem HTTPS pública antes de executar em produção.');
+  try {
+    const parsed = new URL(origem);
+    if (parsed.protocol !== 'https:' || parsed.origin !== origem.replace(/\/$/, '')) throw new Error();
+  } catch {
+    throw new Error('Em produção, configure APP_ORIGIN como uma origem HTTPS válida, sem caminho.');
+  }
+}
+
 export function iniciarApi() {
-  const arquivoBanco = resolve(process.env.DATABASE_PATH ?? 'data/gratificai.sqlite');
+  validarOrigemDeProducao();
+  const arquivoBanco = caminhoBancoConfigurado();
   mkdirSync(dirname(arquivoBanco), { recursive: true });
   const db = abrirBanco(arquivoBanco);
   const server = criarServidorApi(db);
@@ -28,7 +49,7 @@ export function iniciarApi() {
 }
 
 export async function provisionarCAMDoAmbiente() {
-  const arquivoBanco = resolve(process.env.DATABASE_PATH ?? 'data/gratificai.sqlite');
+  const arquivoBanco = caminhoBancoConfigurado();
   mkdirSync(dirname(arquivoBanco), { recursive: true });
   const db = abrirBanco(arquivoBanco);
   try {

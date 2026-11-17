@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ApiError, Usuario, loginApi, logoutApi, obterSessaoApi, verificarSetupApi } from './api';
+import { Usuario, loginApi, logoutApi, obterSessaoApi, verificarSetupApi } from './api';
 import { Profile, Screen, PROFILES } from './domain';
 import { carregarEstado, limparEstadoLocal, useStore } from './store';
 import { Sidebar } from './components/Sidebar';
@@ -14,6 +14,7 @@ export default function App() {
   const [user, setUser] = useState<Usuario | null>(null);
   const [screen, setScreen] = useState<Screen>('dashboard');
   const [unidadeSel, setUnidadeSel] = useState<number | null>(null);
+  const [menuAberto, setMenuAberto] = useState(false);
   const [iniciando, setIniciando] = useState(true);
   const [erroSessao, setErroSessao] = useState('');
   const [erroOperacao, setErroOperacao] = useState('');
@@ -69,7 +70,7 @@ export default function App() {
     }
   };
 
-  if (iniciando) return <div className="flex h-screen items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Verificando sessão…</div>;
+  if (iniciando) return <div className="flex h-dvh items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Verificando sessão…</div>;
   if (!user) {
     return (
       <>
@@ -81,10 +82,10 @@ export default function App() {
   if (user.deveTrocarSenha) {
     return <TrocaSenhaObrigatoria onChanged={novoUsuario => setUser(novoUsuario)} />;
   }
-  if (st.carregando) return <div className="flex h-screen items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Carregando dados autorizados…</div>;
+  if (st.carregando) return <div className="flex h-dvh items-center justify-center bg-slate-100 text-sm font-medium text-slate-600">Carregando dados autorizados…</div>;
   if (st.erro) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-100 p-5">
+      <div className="flex h-dvh items-center justify-center bg-slate-100 p-5">
         <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 text-center shadow-sm">
           <h1 className="text-sm font-bold text-slate-900">Não foi possível carregar os dados</h1>
           <p className="mt-2 text-xs text-rose-700">{st.erro}</p>
@@ -98,19 +99,25 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-100">
-      <Sidebar screen={screen} onNav={setScreen} profile={perfil} />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header user={user} onLogout={() => { void sair(); }} />
+    <div className="flex h-dvh overflow-hidden bg-slate-100">
+      <Sidebar
+        screen={screen}
+        onNav={nextScreen => { setScreen(nextScreen); setMenuAberto(false); }}
+        profile={perfil}
+        mobileOpen={menuAberto}
+        onClose={() => setMenuAberto(false)}
+      />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <Header user={user} onLogout={() => { void sair(); }} onMenu={() => setMenuAberto(true)} menuOpen={menuAberto} />
         {erroOperacao && <p role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-xs text-rose-800">{erroOperacao}</p>}
-        <main className="flex-1 overflow-y-auto">
+        <main className="min-h-0 flex-1 overflow-y-auto">
           {screen === 'dashboard' && <DashboardScreen user={user} onVer={id => { setUnidadeSel(id); setScreen('indicadores'); }} onAdministracao={() => setScreen('administracao')} />}
           {screen === 'indicadores' && (
             st.unidades.length
               ? <IndicadoresScreen key={`${perfil}-${unidadeSel ?? st.unidades[0].id}`} profile={perfil} unidade={st.unidades.find(unit => unit.id === unidadeSel) ?? st.unidades[0]} onUnidade={setUnidadeSel} />
               : <EmptyState title="Nenhuma unidade autorizada" message="A CAM deve cadastrar unidades e vincular a sua conta à unidade correspondente." />
           )}
-          {screen === 'motor' && perfil === 'cam' && <MotorScreen profile={perfil} />}
+          {screen === 'motor' && perfil === 'cam' && <MotorScreen />}
           {screen === 'administracao' && perfil === 'cam' && <AdministracaoScreen />}
           {!allowed.includes(screen) && <EmptyState title="Acesso não disponível" message="Seu perfil não tem permissão para abrir esta área." />}
         </main>

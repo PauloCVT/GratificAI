@@ -4,7 +4,9 @@
 
 Este documento consolida o levantamento preliminar e as evidências técnicas do MVP. A classificação de dados e a análise de riscos são hipóteses de trabalho, não parecer jurídico nem aprovação para produção. A validação pelo responsável institucional por segurança, privacidade/LGPD e representantes das áreas usuárias continua necessária.
 
-O MVP não deve receber dados identificáveis de pacientes, prontuários ou documentos clínicos. Indicadores devem ser informados de forma agregada. Se os valores ou justificativas permitirem identificar trabalhadores ou revelar informação de saúde, devem ser tratados como dados pessoais sensíveis até revisão formal.
+O MVP foi definido para receber somente dados agregados. A tela de lançamento alerta para não inserir nomes, documentos, prontuários ou outros identificadores em justificativas. Indicadores ou justificativas que permitam identificar trabalhadores ou revelar informação de saúde devem ser tratados como dados pessoais sensíveis até revisão formal.
+
+O detector de anomalias é um Isolation Forest não supervisionado, ajustado por unidade e subindicador com até 50 submissões anteriores aprovadas; só pontua após 12 observações. O índice é heurístico, não uma probabilidade nem decisão automática. A planilha sintética enviada para análise não é usada no modelo.
 
 ## Atores e controle de acesso
 
@@ -40,7 +42,7 @@ Escala qualitativa: probabilidade e impacto baixos, médios ou altos. O risco re
 | Uso indevido de conta ou senha inicial exposta | Média / Alto | Hash scrypt; senha forte; troca obrigatória da senha inicial; bloqueio temporário de tentativas de login | Médio. Usar gestor de segredos, canal seguro para credenciais e revisar/desativar contas |
 | Acesso a dados fora do distrito/unidade | Média / Alto | Sessão validada no servidor; autorização por perfil e escopo nas leituras e escritas; testes automatizados | Baixo a médio. Validar todos os perfis e limites de escopo com usuários institucionais |
 | Roubo de sessão ou CSRF | Média / Alto | Cookie HttpOnly, SameSite=Strict, Secure em produção; token CSRF; checagem de origem | Médio. TLS e configuração correta do proxy são pré-requisitos operacionais |
-| Exposição ou perda do arquivo SQLite/backup | Média / Alto | Banco local ignorado pelo Git; uso de parâmetros SQL; orientação para backup | Alto sem controles de host. Restringir permissões, criptografar backups, monitorar acesso e testar restauração |
+| Exposição ou perda do arquivo SQLite/backup | Média / Alto | Banco local ignorado pelo Git; produção exige `DATABASE_PATH` absoluto; uso de parâmetros SQL | Alto sem controles de host. Montar volume persistente, restringir permissões, criptografar backups, monitorar acesso e testar restauração |
 | Reidentificação por indicadores ou justificativas | Média / Alto | Acesso restrito; validação de entradas; auditoria não replica o texto das justificativas | Médio. Não inserir identificadores; avaliar agregação, necessidade e retenção com privacidade/LGPD |
 | Abuso de indisponibilidade ou muitas requisições | Média / Médio | Limite de tamanho do corpo e rate limit básico de login | Médio. Rate limit é em memória e por instância; aplicar limite compartilhado/proxy e monitoramento se houver múltiplas instâncias |
 | Alteração ou exclusão de trilha de auditoria | Baixa / Alto | Triggers impedem update/delete via aplicação; operações registradas com usuário e data | Médio/alto contra administrador do host/banco. Exportar para armazenamento de logs controlado e protegido contra alteração |
@@ -99,12 +101,13 @@ Esses testes não substituem teste de penetração, revisão de configuração d
 ## Checklist obrigatório antes de produção
 
 - [ ] Hospedar atrás de TLS válido; definir `NODE_ENV=production` e `APP_ORIGIN` como origem HTTPS.
-- [ ] Manter API inacessível diretamente à Internet; restringir host/porta e confiar somente em proxy configurado.
+- [ ] Configurar `DATABASE_PATH` para volume persistente; manter uma instância SQLite; manter API inacessível diretamente à Internet e encaminhar `/api` por proxy TLS.
 - [ ] Restringir permissões do banco e do host; criptografar backups e testar restauração.
 - [ ] Guardar segredos em gestor apropriado; nunca versionar `.env`, credenciais ou banco com dados reais.
 - [ ] Definir controlador/operador, base legal, finalidade, minimização, retenção, descarte, direitos e resposta a incidentes com o encarregado/LGPD.
 - [ ] Aprovar perfis e testar acesso com representantes de cada papel e distrito/unidade.
 - [ ] Definir monitoramento, retenção e acesso aos logs; considerar rate limit compartilhado para múltiplas instâncias.
+- [ ] Aplicar os prazos e requisitos institucionais de retenção/backup no provedor de hospedagem; os valores e o provedor ainda não foram informados para esta implantação.
 - [ ] Validar dependências, infraestrutura, política de atualização e plano de continuidade.
 - [ ] Registrar demonstração, aceite e riscos residuais pelo cliente/equipe de segurança.
 
