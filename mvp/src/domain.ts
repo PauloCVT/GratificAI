@@ -40,7 +40,8 @@ export const DS_COLORS: Record<string, string> = {
 
 export interface Unidade {
   id: number; nome: string; tipo: string; distrito: string; status: StatusEnvio; preenchimento: number; nota: number | null;
-  parecerCam?: string | null; revisadoPor?: string | null; revisadoEm?: string | null;
+  parecerCam?: string | null; prazoResposta?: string | null; respostaUnidade?: string | null;
+  revisadoPor?: string | null; revisadoEm?: string | null;
 }
 export const TIPOS_UNIDADE = ['USF', 'UBT', 'UBT MISTA', 'CAPS', 'CECON', 'CECO', 'UCIS', 'MAC', 'SAE', 'NDI'] as const;
 

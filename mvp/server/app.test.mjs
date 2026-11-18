@@ -253,32 +253,53 @@ describe('Autenticação e persistência GratificAI', () => {
     })).status).toBe(400);
 
     const parecer = 'Corrija o denominador e detalhe a origem do dado informado.';
-    const devolvido = await requisitar(`/api/unidades/${unidade.id}/review`, {
+    const prazoResposta = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
       sessao: cam, metodo: 'POST', corpo: { decisao: 'return', parecer },
+    })).status).toBe(400);
+    expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'return', parecer, prazoResposta: '2000-01-01' },
+    })).status).toBe(400);
+    const devolvido = await requisitar(`/api/unidades/${unidade.id}/review`, {
+      sessao: cam, metodo: 'POST', corpo: { decisao: 'return', parecer, prazoResposta },
     });
     expect(devolvido.status).toBe(200);
     expect(devolvido.body.unidades.find(item => item.id === unidade.id)).toMatchObject({
       status: 'Devolvido',
       parecerCam: parecer,
+      prazoResposta,
       revisadoPor: cam.user.nome,
     });
     expect(devolvido.body.enviadas[unidade.id]).toBe(true);
     expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ?').get(unidade.id).total).toBe(0);
 
     const rascunho = await requisitar(`/api/unidades/${unidade.id}/draft`, {
-      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+      sessao: user, metodo: 'POST', corpo: {
+        campos, justificativas: {}, respostaUnidade: 'Corrigimos o denominador conforme os registros atualizados.',
+      },
     });
     expect(rascunho.status).toBe(200);
-    expect(rascunho.body.unidades.find(item => item.id === unidade.id).status).toBe('Devolvido');
+    expect(rascunho.body.unidades.find(item => item.id === unidade.id)).toMatchObject({
+      status: 'Devolvido',
+      prazoResposta,
+    });
+    const respostaUnidade = 'Corrigimos o denominador conforme os registros atualizados.';
+    expect(rascunho.body.unidades.find(item => item.id === unidade.id).respostaUnidade).toBe(respostaUnidade);
 
-    const reenviado = await requisitar(`/api/unidades/${unidade.id}/submit`, {
+    expect((await requisitar(`/api/unidades/${unidade.id}/submit`, {
       sessao: user, metodo: 'POST', corpo: { campos, justificativas: {} },
+    })).status).toBe(400);
+    const reenviado = await requisitar(`/api/unidades/${unidade.id}/submit`, {
+      sessao: user, metodo: 'POST', corpo: { campos, justificativas: {}, respostaUnidade },
     });
     expect(reenviado.status).toBe(200);
     expect(reenviado.body.unidades.find(item => item.id === unidade.id)).toMatchObject({
       status: 'Em Análise',
       parecerCam: null,
+      respostaUnidade,
     });
+    const estadoCam = await requisitar('/api/state', { sessao: cam });
+    expect(estadoCam.body.unidades.find(item => item.id === unidade.id).respostaUnidade).toBe(respostaUnidade);
 
     const aprovado = await requisitar(`/api/unidades/${unidade.id}/review`, {
       sessao: cam, metodo: 'POST', corpo: { decisao: 'approve' },

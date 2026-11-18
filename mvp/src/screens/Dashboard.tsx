@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Usuario } from '../api';
 import { DS_COLORS, DISTRITOS, Profile, PROFILES, Unidade, indicadoresDaUnidade } from '../domain';
-import { revisarLancamento, useStore } from '../store';
+import { carregarEstado, revisarLancamento, useStore } from '../store';
 import { ProgressBar, pctColor, statusColor } from '../components/ui';
 
 export function DashboardScreen({
@@ -18,6 +18,42 @@ export function DashboardScreen({
   const [filterDS, setFilterDS] = useState('Todos');
   const [filterSt, setFilterSt] = useState('Todos');
   const [unidadeEmRevisao, setUnidadeEmRevisao] = useState<Unidade | null>(null);
+  const [atualizando, setAtualizando] = useState(false);
+  const [erroAtualizacao, setErroAtualizacao] = useState('');
+  const atualizacaoEmCurso = useRef(false);
+  const atualizarPainel = useCallback(async () => {
+    if (atualizacaoEmCurso.current) return;
+    atualizacaoEmCurso.current = true;
+    setAtualizando(true);
+    setErroAtualizacao('');
+    try {
+      await carregarEstado({ silencioso: true });
+    } catch (error) {
+      setErroAtualizacao(error instanceof Error ? error.message : 'Falha ao atualizar o painel.');
+    } finally {
+      atualizacaoEmCurso.current = false;
+      setAtualizando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (profile !== 'cam') return;
+    const aoFocar = () => { void atualizarPainel(); };
+    const aoMudarVisibilidade = () => {
+      if (document.visibilityState === 'visible') void atualizarPainel();
+    };
+    const intervalo = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void atualizarPainel();
+    }, 15000);
+    window.addEventListener('focus', aoFocar);
+    document.addEventListener('visibilitychange', aoMudarVisibilidade);
+    return () => {
+      window.clearInterval(intervalo);
+      window.removeEventListener('focus', aoFocar);
+      document.removeEventListener('visibilitychange', aoMudarVisibilidade);
+    };
+  }, [profile, atualizarPainel]);
+
   const unidades = st.unidades;
   const distritos = profile === 'cam'
     ? DISTRITOS
@@ -104,7 +140,16 @@ export function DashboardScreen({
             <h2 className="text-base font-semibold text-slate-800">Unidades no seu escopo</h2>
             <p className="mt-1 text-xs text-slate-500">A pontuação final não está disponível nesta versão.</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {profile === 'cam' && (
+              <>
+                <span className="text-[10px] text-slate-500">Atualização automática a cada 15 s</span>
+                <button onClick={() => { void atualizarPainel(); }} disabled={atualizando}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                  {atualizando ? 'Atualizando…' : 'Atualizar'}
+                </button>
+              </>
+            )}
             <label className="sr-only" htmlFor="filtro-distrito">Filtrar por distrito</label>
             <select id="filtro-distrito" value={filterDS} onChange={event => setFilterDS(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
               <option>Todos</option>{distritos.map(distrito => <option key={distrito.id}>{distrito.id}</option>)}
@@ -115,6 +160,7 @@ export function DashboardScreen({
             </select>
           </div>
         </div>
+        {erroAtualizacao && <p role="alert" className="border-b border-rose-200 bg-rose-50 px-5 py-2 text-xs text-rose-800">{erroAtualizacao}</p>}
         {filtradas.length ? <div className="overflow-x-auto">
           <table className="w-full">
             <thead><tr className="border-b border-slate-100">
@@ -159,7 +205,9 @@ export function DashboardScreen({
 
 function RevisaoModal({ unidade, onFechar }: { unidade: Unidade; onFechar: () => void }) {
   const st = useStore();
+  const unidadeAtual = st.unidades.find(item => item.id === unidade.id) ?? unidade;
   const [parecer, setParecer] = useState('');
+  const [prazoResposta, setPrazoResposta] = useState('');
   const [erro, setErro] = useState('');
   const [processando, setProcessando] = useState(false);
   const portaria = st.portarias.find(item => item.id === st.vigenteId) ?? st.portarias[0];
@@ -174,10 +222,19 @@ function RevisaoModal({ unidade, onFechar }: { unidade: Unidade; onFechar: () =>
       setErro('Escreva um parecer com pelo menos 20 caracteres para devolver.');
       return;
     }
+    if (decisao === 'return' && !prazoResposta) {
+      setErro('Defina o prazo para a unidade responder.');
+      return;
+    }
     setProcessando(true);
     setErro('');
     try {
-      await revisarLancamento(unidade.id, decisao, decisao === 'return' ? parecer.trim() : undefined);
+      await revisarLancamento(
+        unidade.id,
+        decisao,
+        decisao === 'return' ? parecer.trim() : undefined,
+        decisao === 'return' ? prazoResposta : undefined,
+      );
       onFechar();
     } catch (error) {
       setErro(error instanceof Error ? error.message : 'Não foi possível registrar a decisão.');
@@ -192,12 +249,18 @@ function RevisaoModal({ unidade, onFechar }: { unidade: Unidade; onFechar: () =>
         <header className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
           <div>
             <h2 id="revisao-titulo" className="text-sm font-bold text-slate-900">Revisar lançamento</h2>
-            <p className="mt-1 text-xs text-slate-500">{unidade.nome} · {unidade.tipo} · {unidade.distrito}</p>
+            <p className="mt-1 text-xs text-slate-500">{unidadeAtual.nome} · {unidadeAtual.tipo} · {unidadeAtual.distrito}</p>
           </div>
           <button onClick={onFechar} disabled={processando} aria-label="Fechar revisão" className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100">✕</button>
         </header>
 
         <div className="overflow-y-auto p-5">
+          {unidadeAtual.respostaUnidade && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
+              <p className="font-semibold">Resposta da unidade à devolução anterior</p>
+              <p className="mt-1 whitespace-pre-wrap">{unidadeAtual.respostaUnidade}</p>
+            </div>
+          )}
           <div className="overflow-x-auto rounded-lg border border-slate-200">
             <table className="w-full min-w-[700px] text-left text-xs">
               <thead className="bg-slate-50 text-[9px] uppercase tracking-wide text-slate-500">
@@ -227,12 +290,18 @@ function RevisaoModal({ unidade, onFechar }: { unidade: Unidade; onFechar: () =>
               placeholder="Explique o que precisa ser corrigido ou justificado (mínimo 20 caracteres)."
               className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 font-normal focus:outline-none focus:ring-2 focus:ring-blue-300" />
           </label>
+          <label className="mt-3 block text-xs font-semibold text-slate-700">
+            Prazo para a unidade responder
+            <input type="date" min={new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)}
+              value={prazoResposta} onChange={event => setPrazoResposta(event.target.value)}
+              className="mt-1.5 block rounded-lg border border-slate-300 px-3 py-2 font-normal focus:outline-none focus:ring-2 focus:ring-blue-300" />
+          </label>
           {erro && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{erro}</p>}
         </div>
 
         <footer className="flex flex-wrap justify-end gap-2 border-t border-slate-100 px-5 py-3">
           <button onClick={onFechar} disabled={processando} className="rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50">Cancelar</button>
-          <button onClick={() => { void decidir('return'); }} disabled={processando || parecer.trim().length < 20}
+          <button onClick={() => { void decidir('return'); }} disabled={processando || parecer.trim().length < 20 || !prazoResposta}
             className="rounded-lg bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-50">
             {processando ? 'Salvando…' : 'Devolver para ajustes'}
           </button>

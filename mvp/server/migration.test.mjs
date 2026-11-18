@@ -66,8 +66,8 @@ describe('Migração e limpeza da base do protótipo', () => {
     legado.close();
 
     db = abrirBanco(caminho);
-    const lancamento = db.prepare('SELECT status, parecer_cam FROM lancamentos WHERE unidade_id = 42').get();
-    expect(lancamento).toEqual({ status: 'em_analise', parecer_cam: null });
+    const lancamento = db.prepare('SELECT status, parecer_cam, prazo_resposta, resposta_unidade FROM lancamentos WHERE unidade_id = 42').get();
+    expect(lancamento).toEqual({ status: 'em_analise', parecer_cam: null, prazo_resposta: null, resposta_unidade: null });
     expect(db.prepare('SELECT aprovado FROM historico WHERE id = 1').get().aprovado).toBe(0);
   });
 });

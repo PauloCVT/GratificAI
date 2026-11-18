@@ -51,7 +51,7 @@ Para produção, configure TLS num proxy reverso confiável, defina `APP_ORIGIN`
 
 ## Fluxo de submissão e revisão da CAM
 
-Somente a conta vinculada à unidade preenche e submete seus indicadores. Após o envio, o lançamento passa para **Em Análise** e fica bloqueado para edição enquanto aguarda a CAM. No painel geral, a CAM pode revisar os indicadores e justificativas, então **aprovar** ou **devolver para ajustes** com parecer obrigatório de 20 a 1000 caracteres. Lançamentos devolvidos podem ser corrigidos e reenviados; o parecer permanece visível na tela de lançamento até a nova submissão. Após aprovado, o lançamento fica somente para leitura. Os status e o parecer são persistidos no SQLite e retornados no estado da API, inclusive após reiniciar o serviço. Apenas dados aprovados entram no histórico usado pelo Isolation Forest; tentativas devolvidas não contaminam o treinamento.
+Somente a conta vinculada à unidade preenche e submete seus indicadores. Após o envio, o lançamento passa para **Em Análise** e fica bloqueado para edição enquanto aguarda a CAM. No painel geral, a CAM pode revisar os indicadores e justificativas, então **aprovar** ou **devolver para ajustes** com parecer obrigatório de 20 a 1000 caracteres e prazo de resposta. A unidade pode salvar uma resposta de 20 a 1000 caracteres explicando as correções antes de reenviar; essa resposta fica visível à CAM na revisão seguinte. Parecer, prazo e resposta são persistidos no SQLite e retornados no estado da API, inclusive após reiniciar o serviço. Após aprovado, o lançamento fica somente para leitura. Apenas dados aprovados entram no histórico usado pelo Isolation Forest; tentativas devolvidas não contaminam o treinamento.
 
 ## Validação inteligente
 
@@ -64,5 +64,19 @@ cd mvp
 npm test
 npm run build
 ```
+
+## Imagens Docker
+
+O Compose constrói duas imagens: API Node e frontend Nginx. Na raiz do repositório, autentique-se no GHCR e publique as referências `latest`:
+
+```powershell
+docker login ghcr.io -u PauloCVT
+docker compose build
+docker compose push
+```
+
+O login solicita a credencial no terminal; não a inclua em comandos, ficheiros ou no repositório. As imagens publicadas são `ghcr.io/paulocvt/gratificai-api:latest` e `ghcr.io/paulocvt/gratificai-web:latest`.
+
+Para executar, defina `APP_ORIGIN` com a origem HTTPS pública exata, coloque um proxy TLS confiável à frente do frontend na porta local `8080` e inicie `docker compose up -d`. A API só é acessível na rede interna do Compose; o SQLite fica no volume persistente `gratificai-data`. Faça backup desse volume e configure retenção, permissões e criptografia antes de usar dados reais. `WEB_PORT` pode alterar a porta local do frontend.
 
 Rotas principais: `GET /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/session`, `POST /api/auth/logout`, `POST /api/auth/password`, `GET /api/state`, operações de lançamento em `/api/unidades`, incluindo `POST /api/unidades/:id/review` (exclusiva da CAM), cadastro CAM em `/api/usuarios`, e parametrização em `/api/portarias`.

@@ -16,6 +16,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   const salvo = st.lancamentos[unidade.id] ?? {};
   const [campos, setCampos] = useState<Campos>(salvo);
   const [justificativas, setJustificativas] = useState<Record<string, string>>(st.justificativas[unidade.id] ?? {});
+  const [respostaUnidade, setRespostaUnidade] = useState(unidade.respostaUnidade ?? '');
   const [analise, setAnalise] = useState<ResultadoAnalise | null>(null);
   const [analisando, setAnalisando] = useState(false);
   const [erroAnalise, setErroAnalise] = useState('');
@@ -59,7 +60,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
 
   const salvar = async () => {
     try {
-      await salvarLancamento(unidade.id, campos, justificativas);
+      await salvarLancamento(unidade.id, campos, justificativas, respostaUnidade);
       setAviso('Rascunho salvo no backend.');
     } catch (error) {
       setAviso(error instanceof ApiError ? error.message : 'Falha ao salvar o rascunho.');
@@ -67,7 +68,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   };
   const enviar = async () => {
     try {
-      await submeter(unidade.id, campos, justificativas);
+      await submeter(unidade.id, campos, justificativas, respostaUnidade);
       setAviso('Indicadores submetidos para a CAM.');
     } catch (error) {
       setAviso(error instanceof Error ? error.message : 'Falha ao submeter os indicadores.');
@@ -100,8 +101,17 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
         <div role="status" className="rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-xs text-orange-950">
           <p className="font-bold">Lançamento devolvido pela CAM</p>
           <p className="mt-1 whitespace-pre-wrap">{unidade.parecerCam}</p>
+          {unidade.prazoResposta && <p className="mt-2 font-semibold">Prazo para resposta: {new Date(`${unidade.prazoResposta}T00:00:00`).toLocaleDateString('pt-BR')}</p>}
           {unidade.revisadoPor && <p className="mt-1 text-[10px] text-orange-800">Parecer de {unidade.revisadoPor}{unidade.revisadoEm ? ` · ${new Date(unidade.revisadoEm).toLocaleString('pt-BR')}` : ''}</p>}
         </div>
+      )}
+      {unidade.status === 'Devolvido' && (
+        <label className="block rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs font-semibold text-blue-950">
+          Resposta à CAM sobre as correções (mínimo 20 caracteres)
+          <textarea value={respostaUnidade} maxLength={1000} onChange={event => setRespostaUnidade(event.target.value)}
+            rows={3} placeholder="Explique o que foi corrigido ou esclareça os pontos indicados no parecer."
+            className="mt-1.5 w-full rounded-lg border border-blue-300 bg-white px-3 py-2 font-normal text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-300" />
+        </label>
       )}
       {unidade.status === 'Em Análise' && <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-900">Lançamento submetido e aguardando avaliação da CAM.</p>}
       {unidade.status === 'Aprovado' && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-900">Lançamento aprovado pela CAM. Os dados estão bloqueados para edição.</p>}
@@ -252,7 +262,7 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
           </p>
           {!somenteLeitura && <div className="flex items-center gap-2">
             <button onClick={() => { setCampos(salvo); setJustificativas(st.justificativas[unidade.id] ?? {}); setAviso(''); }} className="px-3 py-2 border border-slate-300 text-slate-600 text-[11px] font-medium rounded-lg hover:bg-white cursor-pointer">Cancelar</button>
-            <button disabled={!pronto || !analise || analisando || !!erroAnalise || temBloqueio} onClick={() => { void enviar(); }}
+            <button disabled={!pronto || !analise || analisando || !!erroAnalise || temBloqueio || (unidade.status === 'Devolvido' && respostaUnidade.trim().length < 20)} onClick={() => { void enviar(); }}
               className="px-4 py-2 bg-[#0f172a] text-white text-[11px] font-semibold rounded-lg hover:bg-[#1e3a8a] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors">
               Submeter para CAM
             </button>

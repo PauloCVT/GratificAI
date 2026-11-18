@@ -42,16 +42,16 @@ export function useStore(): State {
 
 export const portariaVigente = (s: State = state) => s.portarias.find(p => p.id === s.vigenteId) ?? s.portarias[0];
 
-export async function carregarEstado(): Promise<void> {
+export async function carregarEstado({ silencioso = false }: { silencioso?: boolean } = {}): Promise<void> {
   const id = ++requisicaoDeEstado;
-  commit({ ...state, carregando: true, erro: null });
+  if (!silencioso) commit({ ...state, carregando: true, erro: null });
   try {
     const dados = await obterEstadoApi();
     if (id === requisicaoDeEstado) incorporarApi(dados);
   } catch (error) {
     if (id === requisicaoDeEstado) {
       const mensagem = error instanceof ApiError ? error.message : 'Falha ao carregar os dados do backend.';
-      commit({ ...state, carregando: false, erro: mensagem });
+      commit({ ...state, carregando: false, erro: silencioso ? state.erro : mensagem });
     }
     throw error;
   }
@@ -61,16 +61,16 @@ export async function analisarLancamento(unidadeId: number, campos: Campos): Pro
   return analisarLancamentoApi(unidadeId, campos);
 }
 
-export async function salvarLancamento(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}): Promise<void> {
-  incorporarApi(await salvarRascunhoApi(unidadeId, campos, justificativas));
+export async function salvarLancamento(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}, respostaUnidade?: string): Promise<void> {
+  incorporarApi(await salvarRascunhoApi(unidadeId, campos, justificativas, respostaUnidade));
 }
 
-export async function submeter(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}): Promise<void> {
-  incorporarApi(await submeterLancamentoApi(unidadeId, campos, justificativas));
+export async function submeter(unidadeId: number, campos: Campos, justificativas: Record<string, string> = {}, respostaUnidade?: string): Promise<void> {
+  incorporarApi(await submeterLancamentoApi(unidadeId, campos, justificativas, respostaUnidade));
 }
 
-export async function revisarLancamento(unidadeId: number, decisao: 'approve' | 'return', parecer?: string): Promise<void> {
-  incorporarApi(await revisarLancamentoApi(unidadeId, decisao, parecer));
+export async function revisarLancamento(unidadeId: number, decisao: 'approve' | 'return', parecer?: string, prazoResposta?: string): Promise<void> {
+  incorporarApi(await revisarLancamentoApi(unidadeId, decisao, parecer, prazoResposta));
 }
 
 export async function definirVigente(id: string): Promise<void> {

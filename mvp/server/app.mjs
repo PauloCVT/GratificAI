@@ -124,6 +124,8 @@ export function abrirBanco(caminho = 'data/gratificai.sqlite') {
       enviado INTEGER NOT NULL DEFAULT 0 CHECK (enviado IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado')),
       parecer_cam TEXT,
+      prazo_resposta TEXT,
+      resposta_unidade TEXT,
       revisado_por TEXT REFERENCES usuarios(id),
       revisado_em TEXT,
       atualizado_em TEXT NOT NULL
@@ -163,6 +165,8 @@ export function abrirBanco(caminho = 'data/gratificai.sqlite') {
     db.exec("ALTER TABLE lancamentos ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado'))");
   }
   if (!colunasLancamento.includes('parecer_cam')) db.exec('ALTER TABLE lancamentos ADD COLUMN parecer_cam TEXT');
+  if (!colunasLancamento.includes('prazo_resposta')) db.exec('ALTER TABLE lancamentos ADD COLUMN prazo_resposta TEXT');
+  if (!colunasLancamento.includes('resposta_unidade')) db.exec('ALTER TABLE lancamentos ADD COLUMN resposta_unidade TEXT');
   if (!colunasLancamento.includes('revisado_por')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_por TEXT REFERENCES usuarios(id)');
   if (!colunasLancamento.includes('revisado_em')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_em TEXT');
   const colunasHistorico = db.prepare('PRAGMA table_info(historico)').all().map(coluna => coluna.name);
@@ -352,7 +356,8 @@ function carregarEstado(db, usuario) {
 
   for (const unidade of unidades) {
     const registro = db.prepare(`
-      SELECT l.campos, l.justificativas, l.status, l.parecer_cam, l.revisado_em,
+      SELECT l.campos, l.justificativas, l.status, l.parecer_cam, l.prazo_resposta,
+        l.resposta_unidade, l.revisado_em,
         u.nome AS revisado_por_nome
       FROM lancamentos l
       LEFT JOIN usuarios u ON u.id = l.revisado_por
@@ -371,6 +376,8 @@ function carregarEstado(db, usuario) {
     unidade.preenchimento = preenchimento;
     unidade.nota = null;
     unidade.parecerCam = registro?.parecer_cam ?? null;
+    unidade.prazoResposta = registro?.prazo_resposta ?? null;
+    unidade.respostaUnidade = registro?.resposta_unidade ?? null;
     unidade.revisadoPor = registro?.revisado_por_nome ?? null;
     unidade.revisadoEm = registro?.revisado_em ?? null;
     lancamentos[unidade.id] = campos;
@@ -583,6 +590,15 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         if (body.decisao === 'return' && (parecer.length < 20 || parecer.length > 1000)) {
           return enviar(res, 400, { error: 'Informe um parecer de pelo menos 20 caracteres para devolver o lançamento.' });
         }
+        const prazoResposta = body.decisao === 'return' && typeof body.prazoResposta === 'string' ? body.prazoResposta : '';
+        const dataPrazo = new Date(`${prazoResposta}T00:00:00.000Z`);
+        if (body.decisao === 'return' && (
+          !/^\d{4}-\d{2}-\d{2}$/.test(prazoResposta) ||
+          Number.isNaN(dataPrazo.getTime()) || dataPrazo.toISOString().slice(0, 10) !== prazoResposta ||
+          prazoResposta < new Date().toISOString().slice(0, 10)
+        )) {
+          return enviar(res, 400, { error: 'Informe um prazo de resposta válido, a partir de hoje.' });
+        }
 
         db.exec('BEGIN IMMEDIATE');
         try {
@@ -594,9 +610,10 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           const status = body.decisao === 'approve' ? 'aprovado' : 'devolvido';
           const atualizacao = db.prepare(`
             UPDATE lancamentos
-            SET status = ?, enviado = 1, parecer_cam = ?, revisado_por = ?, revisado_em = ?, atualizado_em = ?
+            SET status = ?, enviado = 1, parecer_cam = ?, prazo_resposta = ?, revisado_por = ?, revisado_em = ?, atualizado_em = ?
             WHERE unidade_id = ? AND status = 'em_analise'
-          `).run(status, body.decisao === 'return' ? parecer : null, usuario.id, agora, agora, unidadeId);
+          `).run(status, body.decisao === 'return' ? parecer : null,
+            body.decisao === 'return' ? prazoResposta : null, usuario.id, agora, agora, unidadeId);
           if (atualizacao.changes !== 1) {
             throw Object.assign(new Error('O lançamento já foi revisado por outra solicitação.'), { status: 409 });
           }
@@ -638,6 +655,14 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           !/^[\w.]+$/.test(id) || typeof texto !== 'string' || texto.length > 1000)) {
           return enviar(res, 400, { error: 'Justificativas inválidas.' });
         }
+        if (body.respostaUnidade !== undefined &&
+          (typeof body.respostaUnidade !== 'string' || body.respostaUnidade.length > 1000)) {
+          return enviar(res, 400, { error: 'A resposta à devolução deve ter até 1000 caracteres.' });
+        }
+        const respostaUnidade = typeof body.respostaUnidade === 'string' ? body.respostaUnidade.trim() : '';
+        if (unidadeMatch[2] === 'submit' && statusAtual === 'devolvido' && respostaUnidade.length < 20) {
+          return enviar(res, 400, { error: 'Explique as correções realizadas em pelo menos 20 caracteres antes de reenviar.' });
+        }
 
         const portaria = carregarPortariaVigente(db);
         const indicadores = indicadoresDaUnidade(unidade, portaria.pesos);
@@ -653,7 +678,7 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         if (unidadeMatch[2] === 'draft') {
           db.exec('BEGIN IMMEDIATE');
           try {
-            const atual = db.prepare('SELECT status, parecer_cam, revisado_por, revisado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+            const atual = db.prepare('SELECT status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
             if (atual && ['em_analise', 'aprovado'].includes(atual.status)) {
               throw Object.assign(new Error('O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.'), { status: 409 });
             }
@@ -662,16 +687,20 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
             const agora = new Date().toISOString();
             db.prepare(`
               INSERT INTO lancamentos (
-                unidade_id, campos, justificativas, enviado, status, parecer_cam, revisado_por, revisado_em, atualizado_em
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                unidade_id, campos, justificativas, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(unidade_id) DO UPDATE SET
                 campos = excluded.campos, justificativas = excluded.justificativas,
                 enviado = excluded.enviado, status = excluded.status, parecer_cam = excluded.parecer_cam,
+                resposta_unidade = excluded.resposta_unidade,
                 revisado_por = excluded.revisado_por, revisado_em = excluded.revisado_em,
                 atualizado_em = excluded.atualizado_em
             `).run(
               unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), devolvido ? 1 : 0,
-              statusRascunho, devolvido ? atual.parecer_cam : null, devolvido ? atual.revisado_por : null,
+              statusRascunho, devolvido ? atual.parecer_cam : null,
+              devolvido ? atual.prazo_resposta : null,
+              devolvido ? (body.respostaUnidade === undefined ? atual.resposta_unidade : respostaUnidade || null) : null,
+              devolvido ? atual.revisado_por : null,
               devolvido ? atual.revisado_em : null, agora,
             );
             registrarAuditoria(db, usuario.id, 'rascunho_salvo', { unidadeId, modelo: analise.modelo });
@@ -706,12 +735,14 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           }
           db.prepare(`
             INSERT INTO lancamentos (
-              unidade_id, campos, justificativas, enviado, status, parecer_cam, revisado_por, revisado_em, atualizado_em
-            ) VALUES (?, ?, ?, 1, 'em_analise', NULL, NULL, NULL, ?)
+              unidade_id, campos, justificativas, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
+            ) VALUES (?, ?, ?, 1, 'em_analise', NULL, NULL, ?, NULL, NULL, ?)
             ON CONFLICT(unidade_id) DO UPDATE SET campos = excluded.campos,
               justificativas = excluded.justificativas, enviado = 1, status = 'em_analise',
-              parecer_cam = NULL, revisado_por = NULL, revisado_em = NULL, atualizado_em = excluded.atualizado_em
-          `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), agora);
+              parecer_cam = NULL, prazo_resposta = NULL, resposta_unidade = excluded.resposta_unidade,
+              revisado_por = NULL, revisado_em = NULL, atualizado_em = excluded.atualizado_em
+          `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas),
+            statusAtual === 'devolvido' ? respostaUnidade : null, agora);
           const inserirHistorico = db.prepare('INSERT INTO historico (unidade_id, sub_id, valor, submetido_em) VALUES (?, ?, ?, ?)');
           for (const sub of requeridos) {
             const n = Number(body.campos[sub.id].n.replace(',', '.'));
