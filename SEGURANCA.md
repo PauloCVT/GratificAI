@@ -29,7 +29,7 @@ O escopo por distrito/unidade é conferido também nas rotas de escrita. A inter
 | Indicadores agregados e lançamentos | Institucional confidencial; potencialmente pessoal/sensível se reidentificável | Restringir por perfil/unidade; não incluir dados identificáveis de pacientes; avaliar granularidade e justificativas com o encarregado |
 | Sessões e tokens CSRF | Segredo operacional — altamente restrito | Token de sessão aleatório, somente hash no banco; cookie HttpOnly, SameSite=Strict e Secure em produção |
 | Auditoria e logs técnicos | Restrito | Não registrar senhas, cookies, corpos de requisição nem textos de justificativa; limitar acesso e retenção no ambiente de execução |
-| Backup do SQLite | Mesma classificação do banco, ou mais restritiva | Criptografar, restringir acesso, testar restauração e definir retenção antes da produção |
+| Backup PostgreSQL e arquivo SQLite legado | Mesma classificação do banco, ou mais restritiva | Criptografar, restringir acesso, testar restauração e definir retenção antes da produção |
 
 Finalidade, base legal, papéis de controlador/operador, retenção, atendimento a titulares e procedimento de incidente devem ser confirmados pela instituição antes do uso oficial.
 
@@ -42,7 +42,7 @@ Escala qualitativa: probabilidade e impacto baixos, médios ou altos. O risco re
 | Uso indevido de conta ou senha inicial exposta | Média / Alto | Hash scrypt; senha forte; troca obrigatória da senha inicial; bloqueio temporário de tentativas de login | Médio. Usar gestor de segredos, canal seguro para credenciais e revisar/desativar contas |
 | Acesso a dados fora do distrito/unidade | Média / Alto | Sessão validada no servidor; autorização por perfil e escopo nas leituras e escritas; testes automatizados | Baixo a médio. Validar todos os perfis e limites de escopo com usuários institucionais |
 | Roubo de sessão ou CSRF | Média / Alto | Cookie HttpOnly, SameSite=Strict, Secure em produção; token CSRF; checagem de origem | Médio. TLS e configuração correta do proxy são pré-requisitos operacionais |
-| Exposição ou perda do arquivo SQLite/backup | Média / Alto | Banco local ignorado pelo Git; produção exige `DATABASE_PATH` absoluto; uso de parâmetros SQL | Alto sem controles de host. Montar volume persistente, restringir permissões, criptografar backups, monitorar acesso e testar restauração |
+| Exposição ou perda do PostgreSQL/backup | Média / Alto | PostgreSQL com conexão configurada por ambiente; API usa parâmetros SQL; serviço sem porta pública no Compose | Alto sem controles operacionais. Restringir rede e credenciais, criptografar backups, monitorar acesso e testar restauração |
 | Reidentificação por indicadores ou justificativas | Média / Alto | Acesso restrito; validação de entradas; auditoria não replica o texto das justificativas | Médio. Não inserir identificadores; avaliar agregação, necessidade e retenção com privacidade/LGPD |
 | Abuso de indisponibilidade ou muitas requisições | Média / Médio | Limite de tamanho do corpo e rate limit básico de login | Médio. Rate limit é em memória e por instância; aplicar limite compartilhado/proxy e monitoramento se houver múltiplas instâncias |
 | Alteração ou exclusão de trilha de auditoria | Baixa / Alto | Triggers impedem update/delete via aplicação; operações registradas com usuário e data | Médio/alto contra administrador do host/banco. Exportar para armazenamento de logs controlado e protegido contra alteração |
@@ -52,11 +52,11 @@ Escala qualitativa: probabilidade e impacto baixos, médios ou altos. O risco re
 
 | Alternativa | Vantagens | Riscos / adequação |
 |---|---|---|
-| SQLite local, escolhido para o MVP | Simples, sem serviço de banco adicional; adequado a uma instância e baixa concorrência | Arquivo e backup exigem proteção operacional; não oferece criptografia em repouso por padrão; compartilhamento entre instâncias não é adequado |
+| PostgreSQL, banco ativo do MVP | Banco relacional concorrente, adequado a múltiplas conexões e persistência por volume | Exige serviço, credenciais, backup, atualizações e controles de rede |
 | Banco relacional gerenciado | Controles de acesso, backup e operação centralizados podem ser integrados à infraestrutura institucional | Exige configuração, custo, gestão de credenciais, revisão de fornecedor e validação de residência/transferência de dados |
 | Planilhas ou arquivos compartilhados | Baixo custo inicial e fácil adoção | Controle de acesso granular, auditoria, consistência e retenção mais frágeis; inadequado para os dados e perfis previstos |
 
-A escolha do SQLite vale apenas para o MVP em instância única. A decisão de produção deve ser revista com a equipe institucional de infraestrutura e segurança.
+O PostgreSQL é o banco ativo. A instalação Compose mantém os dados num volume persistente; operação de produção deve ser validada com as equipes institucionais de infraestrutura e segurança.
 
 ## Fluxo de autenticação e autorização
 
@@ -101,7 +101,7 @@ Esses testes não substituem teste de penetração, revisão de configuração d
 ## Checklist obrigatório antes de produção
 
 - [ ] Hospedar atrás de TLS válido; definir `NODE_ENV=production` e `APP_ORIGIN` como origem HTTPS.
-- [ ] Configurar `DATABASE_PATH` para volume persistente; manter uma instância SQLite; manter API inacessível diretamente à Internet e encaminhar `/api` por proxy TLS.
+- [ ] Configurar a conexão PostgreSQL, persistência e backup; manter API e banco inacessíveis diretamente à Internet e encaminhar `/api` por proxy TLS.
 - [ ] Restringir permissões do banco e do host; criptografar backups e testar restauração.
 - [ ] Guardar segredos em gestor apropriado; nunca versionar `.env`, credenciais ou banco com dados reais.
 - [ ] Definir controlador/operador, base legal, finalidade, minimização, retenção, descarte, direitos e resposta a incidentes com o encarregado/LGPD.
@@ -111,4 +111,4 @@ Esses testes não substituem teste de penetração, revisão de configuração d
 - [ ] Validar dependências, infraestrutura, política de atualização e plano de continuidade.
 - [ ] Registrar demonstração, aceite e riscos residuais pelo cliente/equipe de segurança.
 
-**Limitação:** o MVP não cifra o arquivo SQLite em repouso por conta própria, não implementa SSO institucional nem rate limit distribuído. Não declarar conformidade LGPD ou prontidão para produção sem fechar os itens aplicáveis acima e obter aprovação institucional.
+**Limitação:** criptografia de backup, SSO institucional e rate limit distribuído dependem da infraestrutura e não são fornecidos pela aplicação. Não declarar conformidade LGPD ou prontidão para produção sem fechar os itens aplicáveis acima e obter aprovação institucional.

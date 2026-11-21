@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, scryptSync, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { DatabaseSync } from 'node:sqlite';
+import { abrirBanco as abrirBancoPostgres } from './database.mjs';
 import {
-  DISTRITOS, MATRIZ_KEYS, PROFILES, TIPOS_UNIDADE, indicadoresDaUnidade, portariasIniciais,
+  DISTRITOS, MATRIZ_KEYS, PROFILES, TIPOS_UNIDADE, calcularNotaGratificacao, indicadoresDaUnidade,
   pesosValidos, progressoDe, regrasValidas,
 } from '../src/domain.ts';
 import { analisarCampos, resultadoImpedeEnvio } from '../src/ml.ts';
@@ -53,142 +53,10 @@ async function conferirSenha(senha, registro) {
   return recebida.length === esperada.length && timingSafeEqual(recebida, esperada);
 }
 
-export function abrirBanco(caminho = 'data/gratificai.sqlite') {
-  const db = new DatabaseSync(caminho);
-  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-
-  const temUsuarios = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usuarios'").get();
-  if (!temUsuarios) {
-    const temDadosLegados = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lancamentos'").get();
-    if (temDadosLegados) {
-      db.exec(`
-        DROP TABLE IF EXISTS auditoria;
-        DROP TABLE IF EXISTS historico;
-        DROP TABLE IF EXISTS lancamentos;
-        DROP TABLE IF EXISTS configuracao;
-        DROP TABLE IF EXISTS portarias;
-      `);
-    }
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS distritos (
-      id TEXT PRIMARY KEY,
-      nome TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS unidades (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nome TEXT NOT NULL,
-      tipo TEXT NOT NULL,
-      distrito_id TEXT NOT NULL REFERENCES distritos(id),
-      criado_em TEXT NOT NULL,
-      UNIQUE (nome COLLATE NOCASE, distrito_id)
-    );
-    CREATE TABLE IF NOT EXISTS usuarios (
-      id TEXT PRIMARY KEY,
-      nome TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      senha_hash TEXT NOT NULL,
-      perfil TEXT NOT NULL,
-      distrito_id TEXT REFERENCES distritos(id),
-      unidade_id INTEGER REFERENCES unidades(id),
-      ativo INTEGER NOT NULL DEFAULT 1 CHECK (ativo IN (0, 1)),
-      deve_trocar_senha INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1)),
-      criado_em TEXT NOT NULL,
-      CHECK (
-        (perfil = 'cam' AND distrito_id IS NULL AND unidade_id IS NULL) OR
-        (perfil IN ('gg','sna','snb1','snb2') AND distrito_id IS NOT NULL AND unidade_id IS NULL) OR
-        (perfil IN ('usf','caps','cecon','mac') AND distrito_id IS NULL AND unidade_id IS NOT NULL)
-      )
-    );
-    CREATE TABLE IF NOT EXISTS sessoes (
-      token_hash TEXT PRIMARY KEY,
-      usuario_id TEXT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-      csrf_token TEXT NOT NULL,
-      expira_em INTEGER NOT NULL,
-      criada_em TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS sessoes_expiracao ON sessoes(expira_em);
-    CREATE TABLE IF NOT EXISTS portarias (
-      id TEXT PRIMARY KEY,
-      payload TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS configuracao (
-      chave TEXT PRIMARY KEY,
-      valor TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS lancamentos (
-      unidade_id INTEGER PRIMARY KEY REFERENCES unidades(id) ON DELETE CASCADE,
-      campos TEXT NOT NULL,
-      justificativas TEXT NOT NULL,
-      enviado INTEGER NOT NULL DEFAULT 0 CHECK (enviado IN (0, 1)),
-      status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado')),
-      parecer_cam TEXT,
-      prazo_resposta TEXT,
-      resposta_unidade TEXT,
-      revisado_por TEXT REFERENCES usuarios(id),
-      revisado_em TEXT,
-      atualizado_em TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS historico (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      unidade_id INTEGER NOT NULL REFERENCES unidades(id) ON DELETE CASCADE,
-      sub_id TEXT NOT NULL,
-      valor REAL NOT NULL,
-      submetido_em TEXT NOT NULL,
-      aprovado INTEGER NOT NULL DEFAULT 0 CHECK (aprovado IN (0, 1))
-    );
-    CREATE INDEX IF NOT EXISTS historico_unidade_indicador
-      ON historico (unidade_id, sub_id, id);
-    CREATE TABLE IF NOT EXISTS auditoria (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      usuario_id TEXT REFERENCES usuarios(id) ON DELETE SET NULL,
-      acao TEXT NOT NULL,
-      detalhes TEXT NOT NULL,
-      criado_em TEXT NOT NULL
-    );
-    CREATE TRIGGER IF NOT EXISTS auditoria_sem_update
-      BEFORE UPDATE ON auditoria BEGIN
-        SELECT RAISE(ABORT, 'registros de auditoria são imutáveis');
-      END;
-    CREATE TRIGGER IF NOT EXISTS auditoria_sem_delete
-      BEFORE DELETE ON auditoria BEGIN
-        SELECT RAISE(ABORT, 'registros de auditoria são imutáveis');
-      END;
-  `);
-  const colunasUsuario = db.prepare('PRAGMA table_info(usuarios)').all().map(coluna => coluna.name);
-  if (!colunasUsuario.includes('deve_trocar_senha')) {
-    db.exec('ALTER TABLE usuarios ADD COLUMN deve_trocar_senha INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1))');
-  }
-  const colunasLancamento = db.prepare('PRAGMA table_info(lancamentos)').all().map(coluna => coluna.name);
-  if (!colunasLancamento.includes('status')) {
-    db.exec("ALTER TABLE lancamentos ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'em_analise', 'devolvido', 'aprovado'))");
-  }
-  if (!colunasLancamento.includes('parecer_cam')) db.exec('ALTER TABLE lancamentos ADD COLUMN parecer_cam TEXT');
-  if (!colunasLancamento.includes('prazo_resposta')) db.exec('ALTER TABLE lancamentos ADD COLUMN prazo_resposta TEXT');
-  if (!colunasLancamento.includes('resposta_unidade')) db.exec('ALTER TABLE lancamentos ADD COLUMN resposta_unidade TEXT');
-  if (!colunasLancamento.includes('revisado_por')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_por TEXT REFERENCES usuarios(id)');
-  if (!colunasLancamento.includes('revisado_em')) db.exec('ALTER TABLE lancamentos ADD COLUMN revisado_em TEXT');
-  const colunasHistorico = db.prepare('PRAGMA table_info(historico)').all().map(coluna => coluna.name);
-  if (!colunasHistorico.includes('aprovado')) {
-    db.exec('ALTER TABLE historico ADD COLUMN aprovado INTEGER NOT NULL DEFAULT 0 CHECK (aprovado IN (0, 1))');
-  }
-  db.prepare("UPDATE lancamentos SET status = 'em_analise' WHERE enviado = 1 AND status = 'pendente'").run();
-
-  const inserirDistrito = db.prepare('INSERT OR IGNORE INTO distritos (id, nome) VALUES (?, ?)');
-  for (const distrito of distritosBase) inserirDistrito.run(distrito.id, distrito.nome);
-
-  if (db.prepare('SELECT COUNT(*) AS total FROM portarias').get().total === 0) {
-    const inserir = db.prepare('INSERT INTO portarias (id, payload) VALUES (?, ?)');
-    for (const portaria of portariasIniciais()) inserir.run(portaria.id, JSON.stringify(portaria));
-    db.prepare('INSERT OR REPLACE INTO configuracao (chave, valor) VALUES (?, ?)').run('vigente_id', 'cam-1.2');
-  }
-  db.exec('PRAGMA user_version = 1');
-  return db;
-}
+export const abrirBanco = abrirBancoPostgres;
 
 export async function provisionarCAMInicial(db, { email, nome = 'Administrador CAM', senha }) {
-  if (db.prepare('SELECT COUNT(*) AS total FROM usuarios').get().total > 0) {
+  if (Number((await db.prepare('SELECT COUNT(*) AS total FROM usuarios').get()).total) > 0) {
     throw new Error('O CAM inicial só pode ser provisionado quando não existe nenhum usuário.');
   }
   if (!validarSenha(senha)) throw new Error('A senha inicial deve ter pelo menos 12 caracteres, uma letra maiúscula, uma minúscula e um número.');
@@ -198,7 +66,7 @@ export async function provisionarCAMInicial(db, { email, nome = 'Administrador C
   }
   const senhaHash = await hashSenha(senha);
   const criadoEm = new Date().toISOString();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO usuarios (id, nome, email, senha_hash, perfil, deve_trocar_senha, criado_em)
     VALUES (?, ?, ?, ?, 'cam', 1, ?)
   `).run(randomUUID(), nome.trim().slice(0, 120) || 'Administrador CAM', emailNormalizado, senhaHash, criadoEm);
@@ -275,10 +143,10 @@ function userPublico(usuario) {
   };
 }
 
-function usuarioDaSessao(db, req) {
+async function usuarioDaSessao(db, req) {
   const token = cookiesDaRequisicao(req)[COOKIE_NAME];
   if (!token || !/^[\w-]{40,60}$/.test(token)) return null;
-  const sessao = db.prepare(`
+  const sessao = await db.prepare(`
     SELECT s.token_hash, s.csrf_token, u.*, un.nome AS unidade_nome
     FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
     LEFT JOIN unidades un ON un.id = u.unidade_id
@@ -329,14 +197,14 @@ function sucessoLogin(key) {
   LOGIN_ATTEMPTS.delete(key);
 }
 
-function listarPortarias(db) {
-  return db.prepare('SELECT payload FROM portarias ORDER BY rowid').all().map(row => JSON.parse(row.payload));
+async function listarPortarias(db) {
+  return (await db.prepare('SELECT payload FROM portarias ORDER BY ordem').all()).map(row => JSON.parse(row.payload));
 }
 
-function carregarPortariaVigente(db) {
-  const id = db.prepare('SELECT valor FROM configuracao WHERE chave = ?').get('vigente_id')?.valor;
-  const registro = db.prepare('SELECT payload FROM portarias WHERE id = ?').get(id);
-  return registro ? JSON.parse(registro.payload) : listarPortarias(db)[0];
+async function carregarPortariaVigente(db) {
+  const id = (await db.prepare('SELECT valor FROM configuracao WHERE chave = ?').get('vigente_id'))?.valor;
+  const registro = await db.prepare('SELECT payload FROM portarias WHERE id = ?').get(id);
+  return registro ? JSON.parse(registro.payload) : (await listarPortarias(db))[0];
 }
 
 function usuarioPodeAcessarUnidade(usuario, unidade) {
@@ -346,17 +214,17 @@ function usuarioPodeAcessarUnidade(usuario, unidade) {
   return false;
 }
 
-function carregarEstado(db, usuario) {
-  const todas = db.prepare('SELECT id, nome, tipo, distrito_id AS distrito FROM unidades ORDER BY nome').all();
+async function carregarEstado(db, usuario) {
+  const todas = await db.prepare('SELECT id, nome, tipo, distrito_id AS distrito FROM unidades ORDER BY nome').all();
   const unidades = todas.filter(unidade => usuarioPodeAcessarUnidade(usuario, unidade));
   const lancamentos = {};
   const enviadas = {};
   const justificativas = {};
-  const pesos = carregarPortariaVigente(db).pesos;
+  const portaria = await carregarPortariaVigente(db);
 
   for (const unidade of unidades) {
-    const registro = db.prepare(`
-      SELECT l.campos, l.justificativas, l.status, l.parecer_cam, l.prazo_resposta,
+    const registro = await db.prepare(`
+      SELECT l.campos, l.justificativas, l.perfil_lancamento, l.status, l.parecer_cam, l.prazo_resposta,
         l.resposta_unidade, l.revisado_em,
         u.nome AS revisado_por_nome
       FROM lancamentos l
@@ -364,7 +232,7 @@ function carregarEstado(db, usuario) {
       WHERE l.unidade_id = ?
     `).get(unidade.id);
     const campos = registro ? JSON.parse(registro.campos) : {};
-    const indicadores = indicadoresDaUnidade(unidade, pesos);
+    const indicadores = indicadoresDaUnidade(unidade, portaria.pesos);
     const preenchimento = progressoDe(indicadores, campos).pct;
     const status = registro?.status ?? 'pendente';
     unidade.status = {
@@ -374,7 +242,10 @@ function carregarEstado(db, usuario) {
       aprovado: 'Aprovado',
     }[status] ?? 'Pendente';
     unidade.preenchimento = preenchimento;
-    unidade.nota = null;
+    const calculo = calcularNotaGratificacao(unidade, campos, portaria, registro?.perfil_lancamento);
+    unidade.nota = registro ? calculo.nota : null;
+    unidade.gratificacaoEsperada = registro ? calculo.gratificacaoEsperada : null;
+    unidade.notaCompleta = Boolean(registro && calculo.completa);
     unidade.parecerCam = registro?.parecer_cam ?? null;
     unidade.prazoResposta = registro?.prazo_resposta ?? null;
     unidade.respostaUnidade = registro?.resposta_unidade ?? null;
@@ -386,19 +257,19 @@ function carregarEstado(db, usuario) {
   }
 
   const users = usuario.perfil === 'cam'
-    ? db.prepare(`
-      SELECT id, nome, email, perfil, distrito_id AS distrito, unidade_id AS unidadeId,
-        ativo, deve_trocar_senha AS deveTrocarSenha, criado_em AS criadoEm
+    ? (await db.prepare(`
+      SELECT id, nome, email, perfil, distrito_id AS distrito, unidade_id AS "unidadeId",
+        ativo, deve_trocar_senha AS "deveTrocarSenha", criado_em AS "criadoEm"
       FROM usuarios ORDER BY nome
-    `).all().map(row => ({ ...row, ativo: Boolean(row.ativo), deveTrocarSenha: Boolean(row.deveTrocarSenha) }))
+    `).all()).map(row => ({ ...row, ativo: Boolean(row.ativo), deveTrocarSenha: Boolean(row.deveTrocarSenha) }))
     : [];
   return {
     user: userPublico(usuario),
     unidades,
     distritos: distritosBase.filter(distrito => usuario.perfil === 'cam' || usuario.distrito_id === distrito.id || unidades.some(u => u.distrito === distrito.id)),
     users,
-    portarias: listarPortarias(db),
-    vigenteId: db.prepare('SELECT valor FROM configuracao WHERE chave = ?').get('vigente_id')?.valor ?? 'cam-1.2',
+    portarias: await listarPortarias(db),
+    vigenteId: (await db.prepare('SELECT valor FROM configuracao WHERE chave = ?').get('vigente_id'))?.valor ?? 'cam-1.2',
     lancamentos,
     enviadas,
     justificativas,
@@ -423,12 +294,12 @@ function validarPortaria(pesos, regras) {
     Object.values(regras).every(valor => typeof valor === 'number' && Number.isFinite(valor)) && regrasValidas(regras);
 }
 
-function registrarAuditoria(db, usuarioId, acao, detalhes = {}) {
-  db.prepare('INSERT INTO auditoria (usuario_id, acao, detalhes, criado_em) VALUES (?, ?, ?, ?)')
+async function registrarAuditoria(db, usuarioId, acao, detalhes = {}) {
+  await db.prepare('INSERT INTO auditoria (usuario_id, acao, detalhes, criado_em) VALUES (?, ?, ?, ?)')
     .run(usuarioId, acao, JSON.stringify(detalhes), new Date().toISOString());
 }
 
-function validarNovaConta(body, db) {
+async function validarNovaConta(body, db) {
   if (!ehObjeto(body) || typeof body.nome !== 'string' || !body.nome.trim() || body.nome.length > 120 ||
     typeof body.email !== 'string' || body.email.trim().length > 254 ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
@@ -436,9 +307,9 @@ function validarNovaConta(body, db) {
     return 'Informe nome, e-mail válido, perfil e senha com pelo menos 12 caracteres, letras maiúsculas/minúsculas e número.';
   }
   if (TIPOS_DISTRITAIS.has(body.perfil)) {
-    if (!db.prepare('SELECT 1 FROM distritos WHERE id = ?').get(body.distrito)) return 'Selecione um distrito válido para este perfil.';
+    if (!await db.prepare('SELECT 1 FROM distritos WHERE id = ?').get(body.distrito)) return 'Selecione um distrito válido para este perfil.';
   } else if (TIPOS_UNIDADE_PROFILE.has(body.perfil)) {
-    const unidade = db.prepare('SELECT id, tipo FROM unidades WHERE id = ?').get(body.unidadeId);
+    const unidade = await db.prepare('SELECT id, tipo FROM unidades WHERE id = ?').get(body.unidadeId);
     if (!unidade || !TIPOS_COMPATIVEIS[body.perfil].has(unidade.tipo)) return 'Selecione uma unidade compatível com o perfil.';
   } else if (body.perfil !== 'cam') {
     return 'Perfil não permitido.';
@@ -450,7 +321,7 @@ function limparCookie(secure) {
   return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
 }
 
-export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
+export function criarServidorApi(db, configuracao = {}) {
   if (process.env.NODE_ENV === 'production' && !process.env.APP_ORIGIN && !configuracao.allowedOrigins) {
     throw new Error('Defina APP_ORIGIN com a origem HTTPS pública antes de executar em produção.');
   }
@@ -494,7 +365,7 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
       }
 
       if (req.method === 'GET' && url.pathname === '/api/auth/setup') {
-        return enviar(res, 200, { setupRequired: db.prepare('SELECT COUNT(*) AS total FROM usuarios').get().total === 0 });
+        return enviar(res, 200, { setupRequired: Number((await db.prepare('SELECT COUNT(*) AS total FROM usuarios').get()).total) === 0 });
       }
 
       if (mutavel && !origenPermitido(req, allowedOrigins)) {
@@ -509,7 +380,7 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         const tentativa = limitarTentativas(req, email);
         if (tentativa.bloqueado) return enviar(res, 429, { error: 'Muitas tentativas de acesso. Aguarde 15 minutos antes de tentar novamente.' });
 
-        const usuario = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? db.prepare(`
+        const usuario = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? await db.prepare(`
           SELECT u.*, un.nome AS unidade_nome
           FROM usuarios u LEFT JOIN unidades un ON un.id = u.unidade_id
           WHERE u.email = ? AND u.ativo = 1
@@ -523,34 +394,34 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         }
 
         sucessoLogin(tentativa.key);
-        db.prepare('DELETE FROM sessoes WHERE expira_em <= ?').run(Date.now());
+        await db.prepare('DELETE FROM sessoes WHERE expira_em <= ?').run(Date.now());
         const token = randomBytes(32).toString('base64url');
         const csrfToken = randomBytes(32).toString('base64url');
         const expira = Date.now() + SESSION_MS;
-        db.prepare('INSERT INTO sessoes (token_hash, usuario_id, csrf_token, expira_em, criada_em) VALUES (?, ?, ?, ?, ?)')
+        await db.prepare('INSERT INTO sessoes (token_hash, usuario_id, csrf_token, expira_em, criada_em) VALUES (?, ?, ?, ?, ?)')
           .run(hash(token), usuario.id, csrfToken, expira, new Date().toISOString());
-        registrarAuditoria(db, usuario.id, 'login');
+        await registrarAuditoria(db, usuario.id, 'login');
         return enviar(res, 200, { user: userPublico(usuario), csrfToken }, {
           'set-cookie': `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}${secureCookie ? '; Secure' : ''}`,
         });
       }
 
       if (req.method === 'GET' && url.pathname === '/api/auth/session') {
-        const auth = usuarioDaSessao(db, req);
+        const auth = await usuarioDaSessao(db, req);
         if (!auth) return enviar(res, 200, { user: null });
         return enviar(res, 200, { user: userPublico(auth.usuario), csrfToken: auth.sessao.csrf_token });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
-        const auth = usuarioDaSessao(db, req);
+        const auth = await usuarioDaSessao(db, req);
         if (!auth) return enviar(res, 200, { ok: true }, { 'set-cookie': limparCookie(secureCookie) });
         if (!csrfValido(req, auth.sessao)) return enviar(res, 403, { error: 'Token de proteção inválido. Atualize a página e tente novamente.' });
-        db.prepare('DELETE FROM sessoes WHERE token_hash = ?').run(auth.sessao.token_hash);
-        registrarAuditoria(db, auth.usuario.id, 'logout');
+        await db.prepare('DELETE FROM sessoes WHERE token_hash = ?').run(auth.sessao.token_hash);
+        await registrarAuditoria(db, auth.usuario.id, 'logout');
         return enviar(res, 200, { ok: true }, { 'set-cookie': limparCookie(secureCookie) });
       }
 
-      const auth = usuarioDaSessao(db, req);
+      const auth = await usuarioDaSessao(db, req);
       if (!auth) return enviar(res, 401, { error: 'Sessão encerrada. Entre novamente.' }, { 'set-cookie': limparCookie(secureCookie) });
       if (mutavel && !csrfValido(req, auth.sessao)) return enviar(res, 403, { error: 'Token de proteção inválido. Atualize a página e tente novamente.' });
       const { usuario, sessao } = auth;
@@ -566,20 +437,20 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         if (!validarSenha(body.novaSenha)) {
           return enviar(res, 400, { error: 'A nova senha deve ter pelo menos 12 caracteres, letras maiúsculas/minúsculas e número.' });
         }
-        db.prepare('UPDATE usuarios SET senha_hash = ?, deve_trocar_senha = 0 WHERE id = ?').run(await hashSenha(body.novaSenha), usuario.id);
-        db.prepare('DELETE FROM sessoes WHERE usuario_id = ? AND token_hash != ?').run(usuario.id, sessao.token_hash);
-        registrarAuditoria(db, usuario.id, 'senha_alterada');
+        await db.prepare('UPDATE usuarios SET senha_hash = ?, deve_trocar_senha = 0 WHERE id = ?').run(await hashSenha(body.novaSenha), usuario.id);
+        await db.prepare('DELETE FROM sessoes WHERE usuario_id = ? AND token_hash != ?').run(usuario.id, sessao.token_hash);
+        await registrarAuditoria(db, usuario.id, 'senha_alterada');
         return enviar(res, 200, { ok: true });
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/state') return enviar(res, 200, carregarEstado(db, usuario));
+      if (req.method === 'GET' && url.pathname === '/api/state') return enviar(res, 200, await carregarEstado(db, usuario));
 
       const revisaoMatch = url.pathname.match(/^\/api\/unidades\/(\d+)\/review$/);
       if (revisaoMatch) {
         if (req.method !== 'POST') return enviar(res, 405, { error: 'Método não permitido.' });
         if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode revisar lançamentos.' });
         const unidadeId = Number(revisaoMatch[1]);
-        const unidade = db.prepare('SELECT id FROM unidades WHERE id = ?').get(unidadeId);
+        const unidade = await db.prepare('SELECT id FROM unidades WHERE id = ?').get(unidadeId);
         if (!unidade) return enviar(res, 404, { error: 'Unidade não encontrada.' });
 
         const body = await lerJson(req);
@@ -600,15 +471,14 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           return enviar(res, 400, { error: 'Informe um prazo de resposta válido, a partir de hoje.' });
         }
 
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          const atual = db.prepare('SELECT status, atualizado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+        await db.transaction(async () => {
+          const atual = await db.prepare('SELECT status, atualizado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
           if (!atual || atual.status !== 'em_analise') {
             throw Object.assign(new Error('Somente lançamentos em análise podem ser revisados.'), { status: 409 });
           }
           const agora = new Date().toISOString();
           const status = body.decisao === 'approve' ? 'aprovado' : 'devolvido';
-          const atualizacao = db.prepare(`
+          const atualizacao = await db.prepare(`
             UPDATE lancamentos
             SET status = ?, enviado = 1, parecer_cam = ?, prazo_resposta = ?, revisado_por = ?, revisado_em = ?, atualizado_em = ?
             WHERE unidade_id = ? AND status = 'em_analise'
@@ -618,31 +488,27 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
             throw Object.assign(new Error('O lançamento já foi revisado por outra solicitação.'), { status: 409 });
           }
           if (body.decisao === 'approve') {
-            db.prepare('UPDATE historico SET aprovado = 1 WHERE unidade_id = ? AND submetido_em = ?')
+            await db.prepare('UPDATE historico SET aprovado = 1 WHERE unidade_id = ? AND submetido_em = ?')
               .run(unidadeId, atual.atualizado_em);
           } else {
-            db.prepare('DELETE FROM historico WHERE unidade_id = ? AND submetido_em = ? AND aprovado = 0')
+            await db.prepare('DELETE FROM historico WHERE unidade_id = ? AND submetido_em = ? AND aprovado = 0')
               .run(unidadeId, atual.atualizado_em);
           }
-          registrarAuditoria(db, usuario.id, `lancamento_${status}`, { unidadeId });
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        return enviar(res, 200, carregarEstado(db, usuario));
+          await registrarAuditoria(db, usuario.id, `lancamento_${status}`, { unidadeId });
+        });
+        return enviar(res, 200, await carregarEstado(db, usuario));
       }
 
       const unidadeMatch = url.pathname.match(/^\/api\/unidades\/(\d+)\/(analyze|draft|submit)$/);
       if (unidadeMatch) {
         const unidadeId = Number(unidadeMatch[1]);
-        const unidade = db.prepare('SELECT id, nome, tipo, distrito_id AS distrito FROM unidades WHERE id = ?').get(unidadeId);
+        const unidade = await db.prepare('SELECT id, nome, tipo, distrito_id AS distrito FROM unidades WHERE id = ?').get(unidadeId);
         if (!unidade || !usuarioPodeAcessarUnidade(usuario, unidade)) return enviar(res, 403, { error: 'Sem permissão para acessar esta unidade.' });
         if (req.method !== 'POST') return enviar(res, 405, { error: 'Método não permitido.' });
         if (unidadeMatch[2] !== 'analyze' && usuario.perfil === 'cam') {
           return enviar(res, 403, { error: 'A CAM revisa lançamentos, mas não pode editar ou submeter dados da unidade.' });
         }
-        const statusAtual = db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId)?.status ?? 'pendente';
+        const statusAtual = (await db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId))?.status ?? 'pendente';
         if (unidadeMatch[2] !== 'analyze' && ['em_analise', 'aprovado'].includes(statusAtual)) {
           return enviar(res, 409, { error: 'O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.' });
         }
@@ -664,52 +530,53 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
           return enviar(res, 400, { error: 'Explique as correções realizadas em pelo menos 20 caracteres antes de reenviar.' });
         }
 
-        const portaria = carregarPortariaVigente(db);
+        const portaria = await carregarPortariaVigente(db);
         const indicadores = indicadoresDaUnidade(unidade, portaria.pesos);
-        const historico = db.prepare(`
-          SELECT sub_id AS subId, valor FROM (
-            SELECT sub_id, valor, id, ROW_NUMBER() OVER (PARTITION BY sub_id ORDER BY id DESC) AS ordem
-            FROM historico WHERE unidade_id = ? AND aprovado = 1
-          ) WHERE ordem <= 50 ORDER BY id
+        const historicoRecente = await db.prepare(`
+          SELECT id, sub_id AS "subId", valor
+          FROM historico WHERE unidade_id = ? AND aprovado = 1
+          ORDER BY id DESC
         `).all(unidadeId);
+        const quantidadePorSub = new Map();
+        const historico = historicoRecente.filter(registro => {
+          const quantidade = quantidadePorSub.get(registro.subId) ?? 0;
+          quantidadePorSub.set(registro.subId, quantidade + 1);
+          return quantidade < 50;
+        }).reverse();
         const analise = analisarCampos(indicadores, body.campos, historico);
         if (unidadeMatch[2] === 'analyze') return enviar(res, 200, analise);
 
         if (unidadeMatch[2] === 'draft') {
-          db.exec('BEGIN IMMEDIATE');
-          try {
-            const atual = db.prepare('SELECT status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+          await db.transaction(async () => {
+            const atual = await db.prepare('SELECT status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
             if (atual && ['em_analise', 'aprovado'].includes(atual.status)) {
               throw Object.assign(new Error('O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.'), { status: 409 });
             }
             const statusRascunho = atual?.status === 'devolvido' ? 'devolvido' : 'pendente';
             const devolvido = statusRascunho === 'devolvido';
             const agora = new Date().toISOString();
-            db.prepare(`
+            await db.prepare(`
               INSERT INTO lancamentos (
-                unidade_id, campos, justificativas, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                unidade_id, campos, justificativas, perfil_lancamento, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(unidade_id) DO UPDATE SET
                 campos = excluded.campos, justificativas = excluded.justificativas,
+                perfil_lancamento = excluded.perfil_lancamento,
                 enviado = excluded.enviado, status = excluded.status, parecer_cam = excluded.parecer_cam,
                 resposta_unidade = excluded.resposta_unidade,
                 revisado_por = excluded.revisado_por, revisado_em = excluded.revisado_em,
                 atualizado_em = excluded.atualizado_em
             `).run(
-              unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), devolvido ? 1 : 0,
+              unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), usuario.perfil, devolvido ? 1 : 0,
               statusRascunho, devolvido ? atual.parecer_cam : null,
               devolvido ? atual.prazo_resposta : null,
               devolvido ? (body.respostaUnidade === undefined ? atual.resposta_unidade : respostaUnidade || null) : null,
               devolvido ? atual.revisado_por : null,
               devolvido ? atual.revisado_em : null, agora,
             );
-            registrarAuditoria(db, usuario.id, 'rascunho_salvo', { unidadeId, modelo: analise.modelo });
-            db.exec('COMMIT');
-          } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
-          }
-          return enviar(res, 200, carregarEstado(db, usuario));
+            await registrarAuditoria(db, usuario.id, 'rascunho_salvo', { unidadeId, modelo: analise.modelo });
+          });
+          return enviar(res, 200, await carregarEstado(db, usuario));
         }
 
         const requeridos = indicadores.filter(item => item.ativo).flatMap(item => item.subs);
@@ -727,97 +594,93 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         }
 
         const agora = new Date().toISOString();
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          const atual = db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
+        await db.transaction(async () => {
+          const atual = await db.prepare('SELECT status FROM lancamentos WHERE unidade_id = ?').get(unidadeId);
           if (atual && ['em_analise', 'aprovado'].includes(atual.status)) {
             throw Object.assign(new Error('O lançamento está em análise ou já foi aprovado; aguarde a revisão da CAM.'), { status: 409 });
           }
-          db.prepare(`
+          await db.prepare(`
             INSERT INTO lancamentos (
-              unidade_id, campos, justificativas, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
-            ) VALUES (?, ?, ?, 1, 'em_analise', NULL, NULL, ?, NULL, NULL, ?)
+              unidade_id, campos, justificativas, perfil_lancamento, enviado, status, parecer_cam, prazo_resposta, resposta_unidade, revisado_por, revisado_em, atualizado_em
+            ) VALUES (?, ?, ?, ?, 1, 'em_analise', NULL, NULL, ?, NULL, NULL, ?)
             ON CONFLICT(unidade_id) DO UPDATE SET campos = excluded.campos,
-              justificativas = excluded.justificativas, enviado = 1, status = 'em_analise',
+              justificativas = excluded.justificativas, perfil_lancamento = excluded.perfil_lancamento,
+              enviado = 1, status = 'em_analise',
               parecer_cam = NULL, prazo_resposta = NULL, resposta_unidade = excluded.resposta_unidade,
               revisado_por = NULL, revisado_em = NULL, atualizado_em = excluded.atualizado_em
-          `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas),
+          `).run(unidadeId, JSON.stringify(body.campos), JSON.stringify(justificativas), usuario.perfil,
             statusAtual === 'devolvido' ? respostaUnidade : null, agora);
           const inserirHistorico = db.prepare('INSERT INTO historico (unidade_id, sub_id, valor, submetido_em) VALUES (?, ?, ?, ?)');
           for (const sub of requeridos) {
             const n = Number(body.campos[sub.id].n.replace(',', '.'));
             const d = Number(body.campos[sub.id].d.replace(',', '.'));
-            inserirHistorico.run(unidadeId, sub.id, ['4.M2', '4.M3'].includes(sub.id) ? n / d : (n / d) * 100, agora);
+            await inserirHistorico.run(unidadeId, sub.id, ['4.M2', '4.M3'].includes(sub.id) ? n / d : (n / d) * 100, agora);
           }
-          registrarAuditoria(db, usuario.id, 'lancamento_submetido', {
+          await registrarAuditoria(db, usuario.id, 'lancamento_submetido', {
             unidadeId, modelo: analise.modelo,
             scoreMaximo: Math.max(0, ...Object.values(analise.campos).map(item => item.score)),
             indicadoresJustificados: Object.keys(justificativas),
           });
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        return enviar(res, 200, carregarEstado(db, usuario));
+        });
+        return enviar(res, 200, await carregarEstado(db, usuario));
       }
 
       if (req.method === 'POST' && url.pathname === '/api/unidades') {
         if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode cadastrar unidades.' });
         const body = await lerJson(req);
         if (!ehObjeto(body) || typeof body.nome !== 'string' || !body.nome.trim() || body.nome.length > 160 ||
-          !TIPOS_UNIDADE.includes(body.tipo) || !db.prepare('SELECT 1 FROM distritos WHERE id = ?').get(body.distrito)) {
+          !TIPOS_UNIDADE.includes(body.tipo) || !(await db.prepare('SELECT 1 FROM distritos WHERE id = ?').get(body.distrito))) {
           return enviar(res, 400, { error: 'Informe nome, tipologia e distrito válidos.' });
         }
         try {
-          const resultado = db.prepare('INSERT INTO unidades (nome, tipo, distrito_id, criado_em) VALUES (?, ?, ?, ?)').run(
+          const resultado = await db.prepare('INSERT INTO unidades (nome, tipo, distrito_id, criado_em) VALUES (?, ?, ?, ?)').run(
             body.nome.trim(), body.tipo, body.distrito, new Date().toISOString(),
           );
-          registrarAuditoria(db, usuario.id, 'unidade_criada', { unidadeId: Number(resultado.lastInsertRowid) });
+          await registrarAuditoria(db, usuario.id, 'unidade_criada', { unidadeId: Number(resultado.lastInsertRowid) });
         } catch (error) {
-          if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return enviar(res, 409, { error: 'Já existe uma unidade com esse nome no distrito.' });
+          if (error.code === '23505') return enviar(res, 409, { error: 'Já existe uma unidade com esse nome no distrito.' });
           throw error;
         }
-        return enviar(res, 201, carregarEstado(db, usuario));
+        return enviar(res, 201, await carregarEstado(db, usuario));
       }
 
       if (req.method === 'POST' && url.pathname === '/api/usuarios') {
         if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode criar contas.' });
         const body = await lerJson(req);
-        const erro = validarNovaConta(body, db);
+        const erro = await validarNovaConta(body, db);
         if (erro) return enviar(res, 400, { error: erro });
         const email = body.email.trim().toLowerCase();
         const distritoId = TIPOS_DISTRITAIS.has(body.perfil) ? body.distrito : null;
         const unidadeId = TIPOS_UNIDADE_PROFILE.has(body.perfil) ? Number(body.unidadeId) : null;
         const id = randomUUID();
         try {
-          db.prepare(`
+          await db.prepare(`
             INSERT INTO usuarios (id, nome, email, senha_hash, perfil, distrito_id, unidade_id, deve_trocar_senha, criado_em)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
           `).run(id, body.nome.trim(), email, await hashSenha(body.senha), body.perfil, distritoId, unidadeId, new Date().toISOString());
-          registrarAuditoria(db, usuario.id, 'usuario_criado', { usuarioId: id, email, perfil: body.perfil });
+          await registrarAuditoria(db, usuario.id, 'usuario_criado', { usuarioId: id, email, perfil: body.perfil });
         } catch (error) {
-          if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return enviar(res, 409, { error: 'Já existe uma conta com esse e-mail.' });
+          if (error.code === '23505') return enviar(res, 409, { error: 'Já existe uma conta com esse e-mail.' });
           throw error;
         }
-        return enviar(res, 201, carregarEstado(db, usuario));
+        return enviar(res, 201, await carregarEstado(db, usuario));
       }
 
       const usuarioMatch = url.pathname.match(/^\/api\/usuarios\/([0-9a-f-]{36})\/(activate|deactivate)$/);
       if (req.method === 'POST' && usuarioMatch) {
         if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode administrar contas.' });
         if (usuarioMatch[1] === usuario.id && usuarioMatch[2] === 'deactivate') return enviar(res, 400, { error: 'Não é possível desativar a própria conta.' });
-        const alvo = db.prepare('SELECT id FROM usuarios WHERE id = ?').get(usuarioMatch[1]);
+        const alvo = await db.prepare('SELECT id FROM usuarios WHERE id = ?').get(usuarioMatch[1]);
         if (!alvo) return enviar(res, 404, { error: 'Conta não encontrada.' });
         if (usuarioMatch[2] === 'deactivate') {
-          const conta = db.prepare('SELECT perfil FROM usuarios WHERE id = ?').get(alvo.id);
-          const camsAtivos = db.prepare("SELECT COUNT(*) AS total FROM usuarios WHERE perfil = 'cam' AND ativo = 1").get().total;
+          const conta = await db.prepare('SELECT perfil FROM usuarios WHERE id = ?').get(alvo.id);
+          const camsAtivos = Number((await db.prepare("SELECT COUNT(*) AS total FROM usuarios WHERE perfil = 'cam' AND ativo = 1").get()).total);
           if (conta.perfil === 'cam' && camsAtivos <= 1) return enviar(res, 400, { error: 'O sistema precisa manter pelo menos uma conta CAM ativa.' });
         }
-        db.prepare('UPDATE usuarios SET ativo = ? WHERE id = ?').run(usuarioMatch[2] === 'activate' ? 1 : 0, alvo.id);
-        if (usuarioMatch[2] === 'deactivate') db.prepare('DELETE FROM sessoes WHERE usuario_id = ?').run(alvo.id);
-        registrarAuditoria(db, usuario.id, `usuario_${usuarioMatch[2]}`, { usuarioId: alvo.id });
-        return enviar(res, 200, carregarEstado(db, usuario));
+        await db.prepare('UPDATE usuarios SET ativo = ? WHERE id = ?').run(usuarioMatch[2] === 'activate' ? 1 : 0, alvo.id);
+        if (usuarioMatch[2] === 'deactivate') await db.prepare('DELETE FROM sessoes WHERE usuario_id = ?').run(alvo.id);
+        await registrarAuditoria(db, usuario.id, `usuario_${usuarioMatch[2]}`, { usuarioId: alvo.id });
+        return enviar(res, 200, await carregarEstado(db, usuario));
       }
 
       if (req.method === 'POST' && url.pathname === '/api/portarias') {
@@ -826,31 +689,33 @@ export function criarServidorApi(db = abrirBanco(), configuracao = {}) {
         if (!ehObjeto(body) || typeof body.nome !== 'string' || !body.nome.trim() || body.nome.length > 200) {
           return enviar(res, 400, { error: 'Informe um nome de portaria válido (até 200 caracteres).' });
         }
-        const base = carregarPortariaVigente(db);
+        const base = await carregarPortariaVigente(db);
         const nova = { id: `portaria-${randomUUID()}`, nome: body.nome.trim(), pesos: base.pesos, regras: base.regras };
-        db.prepare('INSERT INTO portarias (id, payload) VALUES (?, ?)').run(nova.id, JSON.stringify(nova));
-        db.prepare('INSERT OR REPLACE INTO configuracao (chave, valor) VALUES (?, ?)').run('vigente_id', nova.id);
-        registrarAuditoria(db, usuario.id, 'portaria_criada', { id: nova.id, nome: nova.nome });
-        return enviar(res, 201, carregarEstado(db, usuario));
+        await db.prepare('INSERT INTO portarias (id, payload) VALUES (?, ?)').run(nova.id, JSON.stringify(nova));
+        await db.prepare(`INSERT INTO configuracao (chave, valor) VALUES (?, ?)
+          ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor`).run('vigente_id', nova.id);
+        await registrarAuditoria(db, usuario.id, 'portaria_criada', { id: nova.id, nome: nova.nome });
+        return enviar(res, 201, await carregarEstado(db, usuario));
       }
 
       const portariaMatch = url.pathname.match(/^\/api\/portarias\/([^/]+)(?:\/(activate))?$/);
       if (portariaMatch && (req.method === 'PUT' || (req.method === 'POST' && portariaMatch[2] === 'activate'))) {
         if (usuario.perfil !== 'cam') return enviar(res, 403, { error: 'Apenas a CAM pode parametrizar portarias.' });
         const id = decodeURIComponent(portariaMatch[1]);
-        const atual = db.prepare('SELECT payload FROM portarias WHERE id = ?').get(id);
+        const atual = await db.prepare('SELECT payload FROM portarias WHERE id = ?').get(id);
         if (!atual) return enviar(res, 404, { error: 'Portaria não encontrada.' });
         if (portariaMatch[2] === 'activate') {
-          db.prepare('INSERT OR REPLACE INTO configuracao (chave, valor) VALUES (?, ?)').run('vigente_id', id);
-          registrarAuditoria(db, usuario.id, 'portaria_ativada', { id });
+          await db.prepare(`INSERT INTO configuracao (chave, valor) VALUES (?, ?)
+            ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor`).run('vigente_id', id);
+          await registrarAuditoria(db, usuario.id, 'portaria_ativada', { id });
         } else {
           const body = await lerJson(req);
           if (!ehObjeto(body) || !validarPortaria(body.pesos, body.regras)) return enviar(res, 400, { error: 'Pesos e regras inválidos.' });
           const portaria = { ...JSON.parse(atual.payload), pesos: body.pesos, regras: body.regras };
-          db.prepare('UPDATE portarias SET payload = ? WHERE id = ?').run(JSON.stringify(portaria), id);
-          registrarAuditoria(db, usuario.id, 'portaria_publicada', { id });
+          await db.prepare('UPDATE portarias SET payload = ? WHERE id = ?').run(JSON.stringify(portaria), id);
+          await registrarAuditoria(db, usuario.id, 'portaria_publicada', { id });
         }
-        return enviar(res, 200, carregarEstado(db, usuario));
+        return enviar(res, 200, await carregarEstado(db, usuario));
       }
 
       return enviar(res, 404, { error: 'Rota da API não encontrada.' });

@@ -1,37 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolve } from 'node:path';
-import { caminhoBancoConfigurado } from './index.mjs';
+import { configuracaoBanco } from './index.mjs';
 
-let nodeEnvOriginal;
-let databasePathOriginal;
+const variaveis = ['NODE_ENV', 'DATABASE_URL', 'PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'];
+const originais = new Map();
 
 beforeEach(() => {
-  nodeEnvOriginal = process.env.NODE_ENV;
-  databasePathOriginal = process.env.DATABASE_PATH;
-  delete process.env.NODE_ENV;
-  delete process.env.DATABASE_PATH;
+  for (const variavel of variaveis) {
+    originais.set(variavel, process.env[variavel]);
+    delete process.env[variavel];
+  }
 });
 
 afterEach(() => {
-  if (nodeEnvOriginal === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = nodeEnvOriginal;
-  if (databasePathOriginal === undefined) delete process.env.DATABASE_PATH;
-  else process.env.DATABASE_PATH = databasePathOriginal;
+  for (const variavel of variaveis) {
+    const original = originais.get(variavel);
+    if (original === undefined) delete process.env[variavel];
+    else process.env[variavel] = original;
+  }
+  originais.clear();
 });
 
-describe('Configuração do banco para execução', () => {
-  it('mantém o caminho padrão no desenvolvimento', () => {
-    expect(caminhoBancoConfigurado()).toBe(resolve('data/gratificai.sqlite'));
+describe('Configuração do banco PostgreSQL', () => {
+  it('usa as variáveis padrão do driver em desenvolvimento', () => {
+    expect(configuracaoBanco()).toEqual({});
   });
 
-  it('exige um caminho absoluto de volume persistente em produção', () => {
+  it('usa DATABASE_URL quando configurado', () => {
+    process.env.DATABASE_URL = 'postgresql://gratificai:senha@localhost/gratificai';
+    expect(configuracaoBanco()).toEqual({ connectionString: process.env.DATABASE_URL });
+  });
+
+  it('exige configuração de conexão explícita em produção', () => {
     process.env.NODE_ENV = 'production';
-    expect(() => caminhoBancoConfigurado()).toThrow('DATABASE_PATH como caminho absoluto em um volume persistente');
-
-    process.env.DATABASE_PATH = 'data/gratificai.sqlite';
-    expect(() => caminhoBancoConfigurado()).toThrow('DATABASE_PATH como caminho absoluto em um volume persistente');
-
-    process.env.DATABASE_PATH = resolve('persistent-data/gratificai.sqlite');
-    expect(caminhoBancoConfigurado()).toBe(resolve('persistent-data/gratificai.sqlite'));
+    expect(() => configuracaoBanco()).toThrow('DATABASE_URL ou PGHOST/PGDATABASE/PGUSER/PGPASSWORD');
+    process.env.PGHOST = 'postgres';
+    process.env.PGDATABASE = 'gratificai';
+    process.env.PGUSER = 'gratificai';
+    process.env.PGPASSWORD = 'test-password';
+    expect(configuracaoBanco()).toEqual({});
   });
 });

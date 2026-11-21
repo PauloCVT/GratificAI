@@ -40,6 +40,7 @@ export const DS_COLORS: Record<string, string> = {
 
 export interface Unidade {
   id: number; nome: string; tipo: string; distrito: string; status: StatusEnvio; preenchimento: number; nota: number | null;
+  gratificacaoEsperada: number | null; notaCompleta: boolean;
   parecerCam?: string | null; prazoResposta?: string | null; respostaUnidade?: string | null;
   revisadoPor?: string | null; revisadoEm?: string | null;
 }
@@ -71,6 +72,12 @@ export const pesosValidos = (p: Pesos) => MATRIZ_KEYS.every(k => p[k].length ===
 
 export interface Regras { vref: number; corte: number; fatorMac: number; fatorDistrital: number; prazoHorusDias: number }
 export interface Portaria { id: string; nome: string; pesos: Pesos; regras: Regras }
+
+export interface NotaGratificacao {
+  nota: number;
+  gratificacaoEsperada: number;
+  completa: boolean;
+}
 
 export const portariasIniciais = (): Portaria[] => [
   { id: 'cam-1.2', nome: 'Versão CAM 1.2 — Padrão',      pesos: pesosPadrao(), regras: { vref: 4800, corte: 60, fatorMac: 1.05, fatorDistrital: 1.08, prazoHorusDias: 2 } },
@@ -144,6 +151,36 @@ export function indicadoresDaUnidade(u: Unidade, pesos: Pesos): MacroInd[] {
   return buildIndicadores(perfil, pesos[chaveMatriz(perfil)]);
 }
 
+export function calcularNotaGratificacao(u: Unidade, campos: Campos, portaria: Portaria, cargo?: string): NotaGratificacao {
+  const perfil = tipoParaPerfil(u.tipo);
+  const chave = chaveMatriz(perfil);
+  const indicadores = buildIndicadores(perfil, portaria.pesos[chave]);
+  const pesos = portaria.pesos[chave];
+  let nota = 0;
+  let completa = true;
+
+  for (const indicador of indicadores) {
+    if (!indicador.ativo) continue;
+    const subNotas = indicador.subs.map(sub => pctDe(campos[sub.id]));
+    if (subNotas.some(valor => valor === null)) completa = false;
+    const notaIndicador = subNotas.reduce<number>((total, valor) => total + (valor ?? 0), 0) / indicador.subs.length;
+    nota += pesos[indicador.id - 1] * notaIndicador / 100;
+  }
+
+  const fatorCargo = cargo && ['gg', 'sna', 'snb1', 'snb2'].includes(cargo)
+    ? portaria.regras.fatorDistrital
+    : (cargo === 'mac' || (!cargo && perfil === 'mac')) ? portaria.regras.fatorMac : 1;
+  const gratificacaoBruta = nota < portaria.regras.corte
+    ? 0
+    : portaria.regras.vref * nota / 100 * fatorCargo;
+
+  return {
+    nota: Math.round(nota * 100) / 100,
+    gratificacaoEsperada: Math.round(gratificacaoBruta * 100) / 100,
+    completa,
+  };
+}
+
 export function pctDe(c: { n: string; d: string } | undefined): number | null {
   if (!c) return null;
   if (!c.n.trim() || !c.d.trim()) return null;
@@ -152,7 +189,8 @@ export function pctDe(c: { n: string; d: string } | undefined): number | null {
   if (!formato.test(numerador) || !formato.test(denominador)) return null;
   const n = Number(numerador), d = Number(denominador);
   if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0 || n < 0) return null;
-  return (n / d) * 100;
+  const percentual = (n / d) * 100;
+  return Number.isFinite(percentual) ? percentual : null;
 }
 
 export function progressoDe(macros: MacroInd[], campos: Campos) {

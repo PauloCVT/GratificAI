@@ -1,14 +1,14 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { abrirBanco, criarServidorApi, provisionarCAMInicial } from './app.mjs';
 
-export function caminhoBancoConfigurado() {
-  const configurado = process.env.DATABASE_PATH;
-  if (process.env.NODE_ENV === 'production' && (!configurado || !isAbsolute(configurado))) {
-    throw new Error('Em produção, defina DATABASE_PATH como caminho absoluto em um volume persistente.');
+export function configuracaoBanco() {
+  const connectionString = process.env.DATABASE_URL;
+  const parametrosPostgres = ['PGHOST', 'PGDATABASE', 'PGUSER', 'PGPASSWORD'];
+  const conexaoPostgresCompleta = parametrosPostgres.every(variavel => process.env[variavel]);
+  if (process.env.NODE_ENV === 'production' && !connectionString && !conexaoPostgresCompleta) {
+    throw new Error('Em produção, defina DATABASE_URL ou PGHOST/PGDATABASE/PGUSER/PGPASSWORD para conectar ao PostgreSQL.');
   }
-  return resolve(configurado ?? 'data/gratificai.sqlite');
+  return connectionString ? { connectionString } : {};
 }
 
 function validarOrigemDeProducao() {
@@ -23,24 +23,21 @@ function validarOrigemDeProducao() {
   }
 }
 
-export function iniciarApi() {
+export async function iniciarApi() {
   validarOrigemDeProducao();
-  const arquivoBanco = caminhoBancoConfigurado();
-  mkdirSync(dirname(arquivoBanco), { recursive: true });
-  const db = abrirBanco(arquivoBanco);
+  const db = await abrirBanco(configuracaoBanco());
   const server = criarServidorApi(db);
   const porta = Number(process.env.API_PORT ?? 3001);
   const host = process.env.API_HOST ?? '127.0.0.1';
 
   server.listen(porta, host, () => {
     console.log(`API GratificAI disponível em http://${host}:${porta}`);
-    console.log(`Banco SQLite: ${arquivoBanco}`);
+    console.log('Banco PostgreSQL conectado.');
   });
 
   const encerrar = () => {
     server.close(() => {
-      db.close();
-      process.exit(0);
+      void db.close().then(() => process.exit(0));
     });
   };
   process.on('SIGINT', encerrar);
@@ -49,9 +46,7 @@ export function iniciarApi() {
 }
 
 export async function provisionarCAMDoAmbiente() {
-  const arquivoBanco = caminhoBancoConfigurado();
-  mkdirSync(dirname(arquivoBanco), { recursive: true });
-  const db = abrirBanco(arquivoBanco);
+  const db = await abrirBanco(configuracaoBanco());
   try {
     await provisionarCAMInicial(db, {
       email: process.env.BOOTSTRAP_CAM_EMAIL,
@@ -60,8 +55,8 @@ export async function provisionarCAMDoAmbiente() {
     });
     console.log('Conta CAM inicial provisionada. Remova as variáveis de bootstrap após o primeiro uso.');
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) iniciarApi();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await iniciarApi();

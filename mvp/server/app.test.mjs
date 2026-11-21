@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DataType, newDb } from 'pg-mem';
 import { abrirBanco, criarServidorApi, provisionarCAMInicial } from './app.mjs';
 
 let db;
@@ -11,7 +12,15 @@ const camPasswordInitial = 'InitialCam2026!Strong';
 let camPassword;
 
 beforeEach(async () => {
-  db = abrirBanco(':memory:');
+  const memory = newDb();
+  memory.public.registerFunction({
+    name: 'pg_get_serial_sequence',
+    args: [DataType.text, DataType.text],
+    returns: DataType.regclass,
+    implementation: (table, column) => `${table}_${column}_seq`,
+  });
+  const { Pool } = memory.adapters.createPg();
+  db = await abrirBanco({ pool: new Pool(), configurarAuditoria: false });
   camPassword = camPasswordInitial;
   await provisionarCAMInicial(db, { email: camEmail, senha: camPasswordInitial });
   logger = { info: vi.fn() };
@@ -30,7 +39,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  db.close();
+  await db.close();
 });
 
 async function requisitar(caminho, { sessao, metodo = 'GET', corpo, csrf = true, headers = {} } = {}) {
@@ -209,18 +218,22 @@ describe('Autenticação e persistência GratificAI', () => {
       VALUES (?, '4.1.1', 80, ?, 1)
     `);
     for (let observacao = 0; observacao < 11; observacao++) {
-      inserirHistorico.run(unidade.id, `2024-01-${String(observacao + 1).padStart(2, '0')}T00:00:00.000Z`);
+      await inserirHistorico.run(unidade.id, `2024-01-${String(observacao + 1).padStart(2, '0')}T00:00:00.000Z`);
     }
     const enviado = await requisitar(`/api/unidades/${unidade.id}/submit`, { sessao: user, metodo: 'POST', corpo: { campos, justificativas } });
     expect(enviado.status).toBe(200);
     expect(enviado.body.enviadas[unidade.id]).toBe(true);
-    const auditoriaLancamento = db.prepare("SELECT detalhes FROM auditoria WHERE acao = 'lancamento_submetido'").get();
+    expect(enviado.body.unidades.find(item => item.id === unidade.id))
+      .toMatchObject({ nota: 76, gratificacaoEsperada: 3648, notaCompleta: true });
+    expect(await db.prepare('SELECT perfil_lancamento FROM lancamentos WHERE unidade_id = ?').get(unidade.id))
+      .toEqual({ perfil_lancamento: 'usf' });
+    const auditoriaLancamento = await db.prepare("SELECT detalhes FROM auditoria WHERE acao = 'lancamento_submetido'").get();
     expect(auditoriaLancamento.detalhes).not.toContain(justificativas['2.2']);
-    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBe(11);
+    expect(Number((await db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id)).total)).toBe(11);
     expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
       sessao: cam, metodo: 'POST', corpo: { decisao: 'approve' },
     })).status).toBe(200);
-    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBeGreaterThan(11);
+    expect(Number((await db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id)).total)).toBeGreaterThan(11);
 
     const discrepantes = { ...campos, '4.1.1': { n: '1', d: '10' } };
     const analise = await requisitar(`/api/unidades/${unidade.id}/analyze`, {
@@ -243,7 +256,7 @@ describe('Autenticação e persistência GratificAI', () => {
     });
     expect(submetido.status).toBe(200);
     expect(submetido.body.unidades.find(item => item.id === unidade.id).status).toBe('Em Análise');
-    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id).total).toBe(0);
+    expect(Number((await db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ? AND aprovado = 1').get(unidade.id)).total)).toBe(0);
 
     expect((await requisitar(`/api/unidades/${unidade.id}/review`, {
       sessao: user, metodo: 'POST', corpo: { decisao: 'approve' },
@@ -271,7 +284,7 @@ describe('Autenticação e persistência GratificAI', () => {
       revisadoPor: cam.user.nome,
     });
     expect(devolvido.body.enviadas[unidade.id]).toBe(true);
-    expect(db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ?').get(unidade.id).total).toBe(0);
+    expect(Number((await db.prepare('SELECT COUNT(*) AS total FROM historico WHERE unidade_id = ?').get(unidade.id)).total)).toBe(0);
 
     const rascunho = await requisitar(`/api/unidades/${unidade.id}/draft`, {
       sessao: user, metodo: 'POST', corpo: {
@@ -306,7 +319,7 @@ describe('Autenticação e persistência GratificAI', () => {
     });
     expect(aprovado.status).toBe(200);
     expect(aprovado.body.unidades.find(item => item.id === unidade.id).status).toBe('Aprovado');
-    const historico = db.prepare('SELECT COUNT(*) AS total, SUM(aprovado) AS aprovados FROM historico WHERE unidade_id = ?').get(unidade.id);
+    const historico = await db.prepare('SELECT COUNT(*) AS total, SUM(aprovado) AS aprovados FROM historico WHERE unidade_id = ?').get(unidade.id);
     expect(historico.total).toBeGreaterThan(0);
     expect(historico.aprovados).toBe(historico.total);
     expect((await requisitar(`/api/unidades/${unidade.id}/draft`, {
@@ -321,7 +334,9 @@ describe('Autenticação e persistência GratificAI', () => {
     const unidade = await criarUnidade();
     const conta = await criarConta({ unidadeId: unidade.id });
     const user = await loginComSenhaPessoal('user@example.test', 'StrongUser2026!Pass');
-    const id = conta.body.users.find(item => item.email === 'user@example.test').id;
+    const contaPublica = conta.body.users.find(item => item.email === 'user@example.test');
+    expect(contaPublica).toMatchObject({ unidadeId: unidade.id, deveTrocarSenha: true });
+    const id = contaPublica.id;
     expect((await requisitar(`/api/usuarios/${id}/deactivate`, { sessao: cam, metodo: 'POST' })).status).toBe(200);
     expect((await requisitar('/api/state', { sessao: user })).status).toBe(401);
   });
@@ -338,7 +353,7 @@ describe('Autenticação e persistência GratificAI', () => {
     const novoLogin = await requisitar('/api/auth/login', { metodo: 'POST', corpo: { email: camEmail, senha: 'NewStrongCam2026!Password' } });
     expect(novoLogin.status).toBe(200);
     expect(novoLogin.body.user.deveTrocarSenha).toBe(false);
-    expect(db.prepare('SELECT COUNT(*) AS total FROM auditoria').get().total).toBeGreaterThan(0);
+    expect(Number((await db.prepare('SELECT COUNT(*) AS total FROM auditoria').get()).total)).toBeGreaterThan(0);
   });
 
   it('bloqueia dados até a troca da senha inicial', async () => {

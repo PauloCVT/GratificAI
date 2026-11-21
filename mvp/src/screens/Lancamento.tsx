@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Campos, PROFILES, Pesos, Profile, Unidade, chaveMatriz, indicadoresDaUnidade, pctDe, progressoDe, tipoParaPerfil,
+  Campos, PROFILES, Pesos, Profile, Unidade, calcularNotaGratificacao, chaveMatriz, indicadoresDaUnidade, pctDe, progressoDe, tipoParaPerfil,
 } from '../domain';
 import { analisarLancamento, portariaVigente, salvarLancamento, submeter, useStore } from '../store';
 import { ApiError } from '../api';
@@ -30,6 +30,10 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
   const pronto = totalSubs > 0 && filledSubs === totalSubs;
   const somenteLeitura = profile === 'cam' || ['Em Análise', 'Aprovado'].includes(unidade.status);
   const pesos = portaria.pesos;
+  const estimativa = calcularNotaGratificacao(unidade, campos, portaria, profile);
+  const fatorDescricao = ['gg', 'sna', 'snb1', 'snb2'].includes(profile)
+    ? ` × fator distrital (${portaria.regras.fatorDistrital.toFixed(2)})`
+    : unidade.tipo === 'MAC' ? ` × fator MAC (${portaria.regras.fatorMac.toFixed(2)})` : '';
 
   useEffect(() => {
     const versao = ++versaoAnalise.current;
@@ -149,6 +153,29 @@ export function IndicadoresScreen({ profile, unidade, onUnidade }: { profile: Pr
         <ProgressBar value={progPct} color={pctColor(progPct)} />
         <p className="text-[9px] text-slate-400 mt-1">{filledSubs} de {totalSubs} subindicadores preenchidos e válidos</p>
       </div>
+
+      <section aria-label="Nota e gratificação estimadas" className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-5 py-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+            {estimativa.completa ? 'Nota do lançamento' : 'Nota parcial'}
+          </p>
+          <p className="mt-1 font-mono text-2xl font-black text-blue-950">{estimativa.nota.toFixed(2)}<span className="text-sm font-semibold">/100</span></p>
+          <p className="mt-1 text-[10px] text-blue-800">
+            {estimativa.completa ? 'Calculada pelos pesos da portaria vigente.' : 'Estimativa provisória; campos em aberto contam como zero.'}
+          </p>
+        </div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Gratificação esperada</p>
+          <p className="mt-1 font-mono text-2xl font-black text-emerald-950">
+            {estimativa.gratificacaoEsperada.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+          </p>
+          <p className="mt-1 text-[10px] text-emerald-800">
+            {estimativa.nota < portaria.regras.corte
+              ? `Nota abaixo do corte de ${portaria.regras.corte}; estimativa conforme regra vigente.`
+              : `Vref × nota normalizada${fatorDescricao}.`}
+          </p>
+        </div>
+      </section>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <div className="flex border-b border-slate-100 overflow-x-auto">

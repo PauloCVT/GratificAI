@@ -138,7 +138,7 @@ export function DashboardScreen({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-slate-800">Unidades no seu escopo</h2>
-            <p className="mt-1 text-xs text-slate-500">A pontuação final não está disponível nesta versão.</p>
+            <p className="mt-1 text-xs text-slate-500">Nota e gratificação estimada conforme os indicadores e a portaria vigente.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {profile === 'cam' && (
@@ -164,7 +164,7 @@ export function DashboardScreen({
         {filtradas.length ? <div className="overflow-x-auto">
           <table className="w-full">
             <thead><tr className="border-b border-slate-100">
-              {['Unidade', 'Tipo', 'Distrito', 'Preenchimento', 'Status', 'Ações'].map(label => (
+              {['Unidade', 'Tipo', 'Distrito', 'Preenchimento', 'Nota', 'Gratificação estimada', 'Status', 'Ações'].map(label => (
                 <th key={label} scope="col" className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</th>
               ))}
             </tr></thead>
@@ -174,6 +174,18 @@ export function DashboardScreen({
                 <td className="px-4 py-3"><span className="rounded bg-slate-100 px-2 py-1 font-mono text-xs font-semibold text-slate-600">{unidade.tipo}</span></td>
                 <td className="px-4 py-3"><span className="rounded px-2 py-1 font-mono text-xs font-semibold" style={{ backgroundColor: `${DS_COLORS[unidade.distrito] ?? '#64748b'}18`, color: DS_COLORS[unidade.distrito] ?? '#475569' }}>{unidade.distrito}</span></td>
                 <td className="w-44 px-4 py-3"><div className="flex items-center gap-2"><ProgressBar value={unidade.preenchimento} color={pctColor(unidade.preenchimento)} /><span className="w-10 shrink-0 font-mono text-xs text-slate-600">{unidade.preenchimento}%</span></div></td>
+                <td className="px-4 py-3">
+                  {unidade.nota === null
+                    ? <span className="text-xs text-slate-400">—</span>
+                    : <span className="font-mono text-xs font-semibold text-slate-700" title={unidade.notaCompleta ? 'Nota calculada com todos os subindicadores' : 'Estimativa parcial; respostas ausentes contam como zero'}>
+                      {unidade.nota.toFixed(2)}{unidade.notaCompleta ? '' : ' *'}
+                    </span>}
+                </td>
+                <td className="px-4 py-3 font-mono text-xs font-semibold text-emerald-800">
+                  {unidade.gratificacaoEsperada === null
+                    ? <span className="text-slate-400">—</span>
+                    : unidade.gratificacaoEsperada.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                </td>
                 <td className="px-4 py-3"><span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusColor(unidade.status)}`}>{unidade.status}</span></td>
                 <td className="px-4 py-3">
                   {profile === 'cam' && unidade.status === 'Em Análise' ? (
@@ -196,7 +208,7 @@ export function DashboardScreen({
             {profile === 'cam' && <button onClick={onAdministracao} className="mt-4 rounded-lg bg-[#0f172a] px-4 py-2 text-xs font-semibold text-white">Abrir cadastros da CAM</button>}
           </div>
         )}
-        <div className="border-t border-slate-100 px-5 py-3"><p className="text-xs text-slate-500">{filtradas.length} de {unidades.length} unidades exibidas</p></div>
+        <div className="border-t border-slate-100 px-5 py-3"><p className="text-xs text-slate-500">{filtradas.length} de {unidades.length} unidades exibidas · * Estimativa parcial, com respostas ausentes consideradas como zero</p></div>
       </section>
       {unidadeEmRevisao && <RevisaoModal unidade={unidadeEmRevisao} onFechar={() => setUnidadeEmRevisao(null)} />}
     </div>

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  Campos, buildIndicadores, indicadoresDaUnidade, pctDe, pesosPadrao, pesosValidos,
+  Campos, buildIndicadores, calcularNotaGratificacao, indicadoresDaUnidade, pctDe, pesosPadrao, pesosValidos,
+  portariasIniciais,
 } from './domain';
 import { analisarCampos, resultadoImpedeEnvio } from './ml';
 
-const unidade = { id: 1, nome: 'Unidade de teste', tipo: 'USF', distrito: 'DS I', status: 'Pendente' as const, preenchimento: 0, nota: null };
+const unidade = {
+  id: 1, nome: 'Unidade de teste', tipo: 'USF', distrito: 'DS I', status: 'Pendente' as const,
+  preenchimento: 0, nota: null, gratificacaoEsperada: null, notaCompleta: false,
+};
 
 describe('Indicadores e regras de domínio', () => {
   it('monta os subindicadores operacionais da USF sem depender de registros de demonstração', () => {
@@ -27,6 +31,21 @@ describe('Indicadores e regras de domínio', () => {
     expect(pctDe({ n: '10abc', d: '20' })).toBeNull();
     expect(pctDe({ n: '0x10', d: '20' })).toBeNull();
     expect(pctDe({ n: '1,5', d: '3' })).toBe(50);
+    expect(pctDe({ n: '1e308', d: '1e-308' })).toBeNull();
+  });
+
+  it('calcula nota ponderada e gratificação estimada, aplicando o corte da portaria', () => {
+    const campos: Campos = Object.fromEntries(
+      indicadoresDaUnidade(unidade, pesosPadrao()).flatMap(indicador => indicador.subs.map(sub => [
+        sub.id, sub.id === '2.2' ? { n: '0', d: '10' } : { n: '8', d: '10' },
+      ])),
+    );
+    const resultado = calcularNotaGratificacao(unidade, campos, portariasIniciais()[0]);
+    expect(resultado).toEqual({ nota: 76, gratificacaoEsperada: 3648, completa: true });
+    expect(calcularNotaGratificacao(unidade, campos, portariasIniciais()[0], 'gg').gratificacaoEsperada).toBe(3939.84);
+
+    const parcial = calcularNotaGratificacao(unidade, { '1.1': { n: '8', d: '10' } }, portariasIniciais()[0]);
+    expect(parcial).toEqual({ nota: 16, gratificacaoEsperada: 0, completa: false });
   });
 });
 
